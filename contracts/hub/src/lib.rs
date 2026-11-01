@@ -235,7 +235,7 @@ impl AgentHub {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(GAS_CALLBACK)
-                    .on_agent_created(profile),
+                    .on_agent_created(profile, deposit),
             )
     }
 
@@ -243,6 +243,7 @@ impl AgentHub {
     pub fn on_agent_created(
         &mut self,
         profile: AgentProfile,
+        deposit: NearToken,
         #[callback_result] result: Result<(), PromiseError>,
     ) -> Option<AgentProfile> {
         match result {
@@ -253,8 +254,10 @@ impl AgentHub {
                 Some(profile)
             }
             Err(_) => {
+                // The create_account batch failed atomically, so the deposit is
+                // still on this contract: send it back to the caller.
                 env::log_str("agent account creation failed; deposit refunded to caller");
-                Promise::new(profile.owner).transfer(env::attached_deposit());
+                let _ = Promise::new(profile.owner).transfer(deposit);
                 None
             }
         }
@@ -679,6 +682,7 @@ impl AgentHub {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use near_sdk::test_utils::{accounts, VMContextBuilder};

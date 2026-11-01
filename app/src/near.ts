@@ -54,7 +54,7 @@ export async function agentAccount(agentId: string): Promise<Account> {
 
 export async function view<T = any>(contractId: string, methodName: string, args: object = {}): Promise<T> {
   const n = await near();
-  const acc = n.account("dontcare");
+  const acc = await n.account("dontcare");
   return acc.viewFunction({ contractId, methodName, args }) as Promise<T>;
 }
 
