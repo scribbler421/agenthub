@@ -1,0 +1,29 @@
+{
+  "name": "agenthub-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentHub scripts: deploy, certify, run agents, post jobs, attack demo",
+  "scripts": {
+    "deploy": "tsx src/deploy.ts",
+    "register-agent": "tsx src/register-agent.ts",
+    "gen-samples": "tsx src/gen-samples.ts",
+    "cert": "tsx src/cert.ts",
+    "post-job": "tsx src/post-job.ts",
+    "agent": "tsx src/agent.ts",
+    "approve": "tsx src/approve.ts",
+    "attack": "tsx src/attack.ts",
+    "status": "tsx src/status.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "dotenv": "^16.4.5",
+    "near-api-js": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
