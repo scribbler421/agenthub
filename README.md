@@ -23,12 +23,12 @@ Anyone can claim their agent is good. Ratings get gamed, résumés are text, and
 
 ## Try it (testnet)
 
-Prerequisites: Node 22+, Rust + `cargo-near` (or take the `.wasm` from the CI artifact), a funded testnet account, an Anthropic API key.
+Prerequisites: Node 22+, Rust with the `wasm32-unknown-unknown` target, a testnet account with ~10 NEAR (faucet), an Anthropic API key.
 
 ```sh
 git clone https://github.com/scribbler421/agenthub && cd agenthub
-cd contracts && cargo test --workspace && cargo near build non-reproducible-wasm --manifest-path hub/Cargo.toml && cargo near build non-reproducible-wasm --manifest-path mock-usdc/Cargo.toml
-mkdir -p ../out && cp target/near/agenthub/agenthub.wasm target/near/mock_usdc/mock_usdc.wasm ../out/
+cd contracts && cargo test --workspace && cargo build --release --target wasm32-unknown-unknown --workspace
+npm install -g binaryen && mkdir -p ../out && for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
 cd ../app && npm install && cp .env.example .env   # fill in OPERATOR_*, CLIENT_*, ANTHROPIC_API_KEY
 ```
 

@@ -18,14 +18,14 @@ async function accountExists(id: string): Promise<boolean> {
   }
 }
 
-async function deployOne(operator: Account, sub: string, wasmFile: string, initArgs: object): Promise<string> {
+async function deployOne(operator: Account, sub: string, wasmFile: string, initArgs: object, fund: bigint): Promise<string> {
   const id = `${sub}.${operator.accountId}`;
   const wasm = new Uint8Array(fs.readFileSync(path.join(WASM_DIR, wasmFile)));
   const existed = await accountExists(id);
 
   if (!existed) {
     const key = KeyPair.fromRandom("ed25519");
-    const r = await operator.createAccount(id, key.getPublicKey(), 3n * NEAR);
+    const r = await operator.createAccount(id, key.getPublicKey(), fund);
     console.log(`created ${id}  ${explorerTx(txHash(r))}`);
     fs.mkdirSync(KEYS_DIR, { recursive: true });
     fs.writeFileSync(path.join(KEYS_DIR, `${id}.json`), JSON.stringify({ accountId: id, privateKey: key.toString() }, null, 2));
@@ -48,8 +48,8 @@ async function main() {
   const operator = await accountFromEnv("OPERATOR");
   const feeBps = Number(arg("fee-bps", "1000"));
 
-  const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {});
-  const hub = await deployOne(operator, "hub", "agenthub.wasm", { owner: operator.accountId, token, fee_bps: feeBps });
+  const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {}, 3n * NEAR);
+  const hub = await deployOne(operator, "hub", "agenthub.wasm", { owner: operator.accountId, token, fee_bps: feeBps }, 5n * NEAR);
 
   // Both the hub and the operator must be registered on the token to hold it.
   for (const account_id of [hub, operator.accountId]) {

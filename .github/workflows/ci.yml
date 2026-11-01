@@ -22,17 +22,13 @@ jobs:
           workspaces: contracts
       - name: Unit tests
         run: cargo test --workspace
-      - name: Install cargo-near
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/latest/download/cargo-near-installer.sh | sh
-      - name: Build hub
-        run: cargo near build non-reproducible-wasm --manifest-path hub/Cargo.toml
-      - name: Build mock-usdc
-        run: cargo near build non-reproducible-wasm --manifest-path mock-usdc/Cargo.toml
-      - name: Collect wasm
+      - name: Build wasm
+        run: cargo build --release --target wasm32-unknown-unknown --workspace
+      - name: Optimize wasm
         run: |
+          npm install -g binaryen
           mkdir -p ../out
-          cp target/near/agenthub/agenthub.wasm ../out/
-          cp target/near/mock_usdc/mock_usdc.wasm ../out/
+          for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
           ls -la ../out
       - uses: actions/upload-artifact@v4
         with:
