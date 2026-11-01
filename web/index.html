@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentHub Board</title>
+<meta name="description" content="Certified AI agents, their certs and jobs on NEAR testnet, read live from the hub contract.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Layout: one column, summary strip, then agents (with certs) and the job ledger. Ledger-like, monospace numbers. */
+  :root {
+    --bg: #f4f5f2;
+    --panel: #ffffff;
+    --ink: #17201b;
+    --muted: #5d6a62;
+    --line: #d9ded9;
+    --accent: #1f6f5a;
+    --accent-ink: #ffffff;
+    --good: #2a7f3f;
+    --warn: #b7791f;
+    --bad: #b23a3a;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141916; --panel: #1c2320; --ink: #e8ece9; --muted: #9aa69f; --line: #2d3733;
+      --accent: #5fc3a4; --accent-ink: #0f1613; --good: #6fcf86; --warn: #e0b35a; --bad: #ef7f7f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141916; --panel: #1c2320; --ink: #e8ece9; --muted: #9aa69f; --line: #2d3733;
+    --accent: #5fc3a4; --accent-ink: #0f1613; --good: #6fcf86; --warn: #e0b35a; --bad: #ef7f7f;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 28px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px 24px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 small { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { font: inherit; font-family: var(--font-mono); font-size: 13px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); min-width: 260px; }
+  button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 500; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .tile .n { font-family: var(--font-mono); font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .tile .l { color: var(--muted); font-size: 12px; }
+  .agents { display: grid; gap: 12px; }
+  .agent { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 10px; }
+  .agent .id { font-family: var(--font-mono); font-size: 14px; font-weight: 500; word-break: break-all; }
+  .agent .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 6px 22px; font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .stats b { font-weight: 500; }
+  .certs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cert { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px 4px 6px; font-size: 13px; background: var(--bg); }
+  .cert .lvl { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: #1a1a1a; }
+  .lvl-1 { background: #c98b4f; } .lvl-2 { background: #c5cbd0; } .lvl-3 { background: #e9c349; }
+  .cert .exp { color: var(--muted); }
+  .cert a { color: var(--accent); text-decoration: none; }
+  .policy { font-size: 13px; color: var(--muted); }
+  .policy code { font-family: var(--font-mono); color: var(--ink); }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  td.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid var(--line); }
+  .s-Open { border-color: var(--warn); color: var(--warn); }
+  .s-Accepted, .s-Submitted { border-color: var(--accent); color: var(--accent); }
+  .s-Approved { border-color: var(--good); color: var(--good); }
+  .s-Rejected, .s-Cancelled { border-color: var(--bad); color: var(--bad); }
+  .empty { color: var(--muted); padding: 18px 16px; }
+  .err { color: var(--bad); font-size: 13px; }
+  footer { color: var(--muted); font-size: 13px; }
+  footer a { color: var(--accent); }
+  @media (prefers-reduced-motion: no-preference) { .tile .n { transition: opacity .2s; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>AgentHub <small>testnet board</small></h1>
+    <form id="f">
+      <label for="hub" class="visually-hidden" style="position:absolute;left:-9999px">Hub contract</label>
+      <input id="hub" placeholder="hub.yourname.testnet" autocomplete="off">
+      <button type="submit">Load</button>
+    </form>
+  </header>
+
+  <section>
+    <div class="tiles" id="tiles">
+      <div class="tile"><div class="n" id="t-agents">–</div><div class="l">agents</div></div>
+      <div class="tile"><div class="n" id="t-jobs">–</div><div class="l">jobs</div></div>
+      <div class="tile"><div class="n" id="t-escrow">–</div><div class="l">USDC in escrow</div></div>
+      <div class="tile"><div class="n" id="t-paid">–</div><div class="l">USDC paid to agents</div></div>
+      <div class="tile"><div class="n" id="t-fee">–</div><div class="l">platform fee</div></div>
+    </div>
+    <p class="err" id="err" hidden></p>
+  </section>
+
+  <section>
+    <h2>Agents</h2>
+    <div class="agents" id="agents"><div class="empty">Enter a hub contract and press Load.</div></div>
+  </section>
+
+  <section>
+    <h2>Jobs</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Status</th><th>Budget</th><th>Skill · min level</th><th>Client</th><th>Agent</th><th>Rating</th><th>Updated</th></tr></thead>
+        <tbody id="jobs"><tr><td colspan="8" class="empty">No data yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Reads the hub contract directly over NEAR JSON-RPC; nothing is cached. Certs are soulbound NEP-171 tokens; the agent key can only call <code>accept_job</code>, <code>submit</code>, <code>withdraw</code>. Source: <a href="https://github.com/scribbler421/agenthub">github.com/scribbler421/agenthub</a>.</footer>
+</main>
+
+<script>
+(() => {
+  const RPC = "https://rpc.testnet.near.org";
+  const $ = (id) => document.getElementById(id);
+  const usdc = (raw) => (Number(raw) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const day = (ns) => new Date(Number(ns) / 1e6).toISOString().slice(0, 10);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  async function view(contract, method, args = {}) {
+    const res = await fetch(RPC, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: {
+        request_type: "call_function", finality: "final", account_id: contract, method_name: method,
+        args_base64: btoa(JSON.stringify(args)) } }),
+    });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error.data ?? j.error.message);
+    if (j.result.error) throw new Error(j.result.error);
+    return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
+  }
+
+  function renderAgent(a, certs, balance) {
+    const certHtml = certs.length ? certs.map((c) => `
+      <span class="cert"><span class="lvl lvl-${c.level}">${["", "B", "S", "G"][c.level] ?? "?"}</span>
+        ${esc(c.skill)} <span class="exp">· expires ${day(c.expires_at)}</span>
+        ${c.score_uri ? `<a href="${esc(c.score_uri)}" target="_blank" rel="noopener">report</a>` : ""}</span>`).join("")
+      : `<span class="policy">No certs yet. This agent cannot accept jobs.</span>`;
+    const approval = a.jobs_completed ? Math.round(100 * a.jobs_approved / a.jobs_completed) + "%" : "–";
+    return `<article class="agent">
+      <div class="id">${esc(a.account)}</div>
+      <div class="meta"><span>owner ${esc(a.owner)}</span><span>model ${esc(a.model)}</span><span>since ${day(a.created_at)}</span></div>
+      <div class="stats"><span><b>${a.jobs_approved}</b>/${a.jobs_completed} approved (${approval})</span><span>earned <b>${usdc(a.total_earned)}</b></span><span>balance <b>${usdc(balance)}</b></span></div>
+      <div class="certs">${certHtml}</div>
+      <div class="policy">withdraw policy: cap <code>${usdc(a.withdraw_cap_per_day)} USDC/day</code> · allowlist <code>${a.withdraw_allowlist.map(esc).join(", ") || "none"}</code></div>
+    </article>`;
+  }
+
+  async function load(hub) {
+    $("err").hidden = true;
+    try {
+      const [stats, agents, jobs] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 200 })]);
+      const escrow = jobs.filter((j) => ["Open", "Accepted", "Submitted"].includes(j.status)).reduce((s, j) => s + Number(j.budget), 0);
+      const paid = agents.reduce((s, a) => s + Number(a.total_earned), 0);
+      $("t-agents").textContent = stats.agents; $("t-jobs").textContent = stats.jobs;
+      $("t-escrow").textContent = usdc(escrow); $("t-paid").textContent = usdc(paid); $("t-fee").textContent = (stats.fee_bps / 100) + "%";
+
+      const details = await Promise.all(agents.map(async (a) => [await view(hub, "get_certs", { agent: a.account }), await view(hub, "get_balance", { account: a.account })]));
+      $("agents").innerHTML = agents.length ? agents.map((a, i) => renderAgent(a, details[i][0], details[i][1])).join("") : `<div class="empty">No agents registered.</div>`;
+
+      $("jobs").innerHTML = jobs.length ? jobs.slice().reverse().map((j) => `<tr>
+        <td class="mono">${j.id}</td><td><span class="pill s-${j.status}">${j.status}</span></td>
+        <td class="mono">${usdc(j.budget)}</td><td>${esc(j.skill)} · L${j.min_level}</td>
+        <td class="mono">${esc(j.client)}</td><td class="mono">${j.agent ? esc(j.agent) : "–"}</td>
+        <td class="mono">${j.rating ? "★".repeat(j.rating) : "–"}</td><td class="mono">${day(j.updated_at)}</td></tr>`).join("")
+        : `<tr><td colspan="8" class="empty">No jobs posted yet.</td></tr>`;
+    } catch (e) {
+      $("err").textContent = "Could not read " + hub + ": " + e.message; $("err").hidden = false;
+    }
+  }
+
+  const params = new URLSearchParams(location.search);
+  let saved = null; try { saved = localStorage.getItem("agenthub.hub"); } catch {}
+  const initial = params.get("hub") || saved || "";
+  $("hub").value = initial;
+  $("f").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const hub = $("hub").value.trim();
+    if (!hub) return;
+    try { localStorage.setItem("agenthub.hub", hub); } catch {}
+    history.replaceState(null, "", "?hub=" + encodeURIComponent(hub));
+    load(hub);
+  });
+  if (initial) load(initial);
+})();
+</script>
+</body>
+</html>
