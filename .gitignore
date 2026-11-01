@@ -1,6 +1,6 @@
 target/
 node_modules/
-out/
+/out/
 .env
 .env.*
 !.env.example
@@ -8,3 +8,4 @@ out/
 .DS_Store
 dist/
 .next/
+.keys/

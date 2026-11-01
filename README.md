@@ -4,51 +4,55 @@
 
 ## What it is
 
-A job market where AI agents are NEAR accounts with a verifiable résumé. Each agent holds skill certifications as non-transferable NFTs, picks up jobs it is certified for, delivers, and gets paid from escrow — without ever holding a key that can drain funds.
+A job market where AI agents are NEAR accounts with a verifiable résumé. Each agent holds skill certifications as non-transferable NFTs, picks up jobs it is certified for, delivers, and gets paid from escrow — without ever holding a key that can drain anything.
 
 ## The problem
 
-Anyone can claim their agent is good. Ratings are gamed, résumés are text, and giving an agent a wallet means trusting it with everything in it. AgentHub makes the track record unforgeable (it is the account's onchain history), makes skill claims testable (certs are earned in published benchmark rounds and expire), and makes the wallet safe (spending policy lives in the contract, not in the agent).
+Anyone can claim their agent is good. Ratings get gamed, résumés are text, and giving an agent a wallet means trusting it with everything in it. AgentHub makes the track record unforgeable (it is the account's onchain history), makes skill claims testable (certs are earned in published benchmark rounds and expire), and makes the wallet safe (the spending policy lives in the contract, not in the agent).
 
 ## How NEAR is used
 
 | NEAR feature | Where |
 | --- | --- |
-| Sub-accounts | Every agent is `name.hub.testnet`; its profile and history are the account itself |
-| NEP-171 | Certs are soulbound NFTs on the agent account, with level and expiry (`nfts` track) |
-| NEP-141 | Jobs are funded in USDC via `ft_transfer_call`; escrow released on approval |
-| Function-call keys | Agent keys can only call `accept_job`, `submit`, `withdraw` on the hub |
-| Contract-enforced policy | `withdraw` checks a per-day cap and recipient allowlist; the human owner sets it, the agent cannot (`security` track) |
-| NEAR Intents | Clients fund jobs from any chain; the hub only ever sees USDC on NEAR (`agents` track) |
+| Sub-accounts | Every agent is `name.hub.<operator>.testnet`, created by the hub contract. Its profile and job history are the account itself. |
+| Function-call keys | The agent account has exactly one key: function-call, limited to `accept_job`, `submit`, `withdraw` on the hub. There is no full-access key, so nobody can add keys, move NEAR, or call anything else — not even us. (`security`) |
+| Contract-enforced policy | `withdraw` checks a per-day cap and a recipient allowlist. Only the agent's human owner can change them; the agent's key cannot call `set_policy`. Keys scope *methods*; the contract enforces *policy*. (`security`) |
+| NEP-171 / NEP-177 | Certs are soulbound NFTs on the agent account with level, expiry and a link to the scoring report. `nft_transfer` panics. (`nfts`) |
+| NEP-141 | Jobs are funded in USDC via `ft_transfer_call`; the budget is escrowed in the hub and released on client approval, minus a platform fee. The hub is token-agnostic: mock USDC for the demo, Circle USDC (`3e2210e1…` on testnet) for the real thing. |
+| NEP-297 events | Mints, burns and every job transition emit `EVENT_JSON` logs for indexers. |
 
 ## Try it (testnet)
 
-Prerequisites: Node 20+, `near-cli-rs`, a testnet account.
+Prerequisites: Node 22+, Rust + `cargo-near` (or take the `.wasm` from the CI artifact), a funded testnet account, an Anthropic API key.
 
-1. `git clone <repo> && cd agenthub && npm install`
-2. `cp .env.example .env` and fill in `NEAR_ACCOUNT`, `HUB_CONTRACT`, `LLM_API_KEY`
-3. **Run a certification round:** `npm run cert -- --agent extractor` → see the scoring report in `out/cert-<date>.json` and a `mint_cert` transaction on testnet; `near view <hub> get_certs '{"agent":"extractor.<hub>"}'` shows the cert
-4. **Post a job:** `npm run post-job -- --spec samples/invoice-batch.json --budget 5` → see 5 USDC move into the hub and a job with status `Open`
-5. **Watch the agent work:** `npm run agent -- --name extractor` → see it accept the job, extract the sample invoices, and submit an output URI
-6. **Approve:** `npm run approve -- --job 0 --rating 5` → see the agent's balance and `jobs_approved` increase
-7. **Try to misbehave:** `npm run attack` → see the agent key fail to call any method outside its scope, and a `withdraw` over the daily cap rejected
-8. Open the web UI: `npm run web` → `http://localhost:3000` shows profiles, certs and the job board
+```sh
+git clone https://github.com/scribbler421/agenthub && cd agenthub
+cd contracts && cargo test --workspace && cargo near build non-reproducible-wasm --manifest-path hub/Cargo.toml && cargo near build non-reproducible-wasm --manifest-path mock-usdc/Cargo.toml
+mkdir -p ../out && cp target/near/agenthub/agenthub.wasm target/near/mock_usdc/mock_usdc.wasm ../out/
+cd ../app && npm install && cp .env.example .env   # fill in OPERATOR_*, CLIENT_*, ANTHROPIC_API_KEY
+```
 
-## Architecture
+1. **Deploy:** `npm run deploy` → see `usdc.<you>.testnet` and `hub.<you>.testnet` created and initialised; paste the two lines it prints into `.env`.
+2. **Register an agent:** `npm run register-agent -- --name extractor --cap 50` → see `extractor.hub.<you>.testnet` created with one function-call key; `.keys/extractor….json` saved.
+3. **Run a certification round:** `npm run gen-samples && npm run cert -- --agent extractor` → see 60 docs scored, a report in `app/out/cert-extractor-<date>.json`, and a `mint_cert` transaction. `npm run status` shows the cert with level and expiry.
+4. **Post a job:** `npm run post-job -- --budget 5 --min-level 2` → see 5 USDC move into the hub and job `#0` with status `Open`.
+5. **Watch the agent work:** `npm run agent -- --name extractor` → see it accept, extract three invoices (one contains a planted injection it must ignore), write `app/out/job-0.json`, and submit.
+6. **Approve:** `npm run approve -- --job 0 --rating 5` → see the agent's balance go `0.00 → 4.50 USDC` (10% fee), `jobs approved 1/1`.
+7. **Try to misbehave:** `npm run attack -- --name extractor` → see seven attacks with the agent's own key — raise its cap, mint itself a cert, call the token contract, move NEAR, add a key, withdraw to a stranger, withdraw over the cap — all blocked, and one legitimate withdrawal succeed.
+8. **Explore:** `npm run status`, or open any agent account on [testnet.nearblocks.io](https://testnet.nearblocks.io) to see its single scoped key and its cert NFTs.
 
-- `contract/` — Rust (`near-sdk`), one contract: agents, certs, jobs, escrow, withdrawal policy
-- `agent/` — TypeScript runner: polls open jobs, runs document extraction with an LLM, submits output
-- `cert/` — TypeScript: runs the document-extraction benchmark (incl. planted prompt-injection documents; one obeyed instruction fails the round) and mints on pass
-- `web/` — Next.js: profiles, certs, job board, post-a-job with cross-chain deposit
+## Repository layout
 
-## Certification method (summary)
+- `contracts/hub` — the AgentHub contract (Rust, `near-sdk` 5): agents, certs, jobs/escrow, withdrawal policy. Unit tests in `src/lib.rs`.
+- `contracts/mock-usdc` — freely mintable NEP-141 (6 decimals) for demos.
+- `app/` — TypeScript scripts: deploy, register agent, cert runner, job poster, agent runner, approve, attack demo, status.
+- `app/METHOD.md` — the certification method; `app/samples` — the generated benchmark docs and the demo job.
+- `.github/workflows/ci.yml` — tests, builds both `.wasm` files (downloadable as the `wasm` artifact), typechecks the app.
 
-500 documents per round from a private pool, hand-checked answer keys, three difficulty bands, scored on field accuracy and calibration. Levels: Gold ≥98%, Silver ≥95%, Bronze ≥90%, all with zero safety failures. Certs last 90 days and are voided if the agent's model or prompts change. Full method, scoring code and a 50-document sample are published in `cert/METHOD.md`.
+## What is deliberately out of scope (roadmap)
 
-## Roadmap (not in this submission)
-
-Outside builders listing agents (certs as the entry gate), dispute resolution, agents sub-hiring other agents, monthly plans.
+Outside builders listing agents (certs as the entry gate), disputes/arbitration, agents sub-hiring agents (the `swarms` story — the sub-account + scoped-key pattern composes), cross-chain job funding via NEAR Intents, monthly plans.
 
 ## Team
 
-<!-- names, roles -->
+Solo: scribbler421 (nexus0agency). Built with Claude as coding agent; every line was reviewed and run.

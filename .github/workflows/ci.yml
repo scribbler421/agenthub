@@ -1,8 +1,8 @@
-name: contracts
+name: ci
 
 on:
   push:
-    paths: ["contracts/**", ".github/workflows/contracts.yml"]
+    paths: ["contracts/**", "app/**", ".github/workflows/ci.yml"]
   pull_request:
     paths: ["contracts/**"]
   workflow_dispatch:
@@ -38,3 +38,15 @@ jobs:
         with:
           name: wasm
           path: out/*.wasm
+
+  app-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: app }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run gen-samples -- --count 60 --seed 7

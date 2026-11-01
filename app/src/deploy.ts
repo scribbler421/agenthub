@@ -1,64 +1,61 @@
 // Deploys mock USDC and the hub as sub-accounts of the operator, initialises
 // both, and registers the hub on the token for storage.
-//   npm run deploy                      (uses ../out/*.wasm from CI or cargo near build)
-//   npm run deploy -- --fee-bps 1000
+//   npm run deploy                 (uses ../out/*.wasm from CI or `cargo near build`)
+//   npm run deploy -- --fee-bps 1000 --redeploy
 import fs from "node:fs";
 import path from "node:path";
-import { KeyPair } from "near-api-js";
-import { accountFromEnv, call, NEAR, arg, hasFlag, txHash, explorerTx } from "./near.js";
+import { KeyPair, type Account } from "near-api-js";
+import { accountFromEnv, agentAccount, call, NEAR, arg, hasFlag, txHash, explorerTx, near, KEYS_DIR } from "./near.js";
 
 const WASM_DIR = path.resolve("../out");
 
-async function deployOne(operatorId: string, operator: any, sub: string, wasmFile: string, initMethod: string, initArgs: object) {
-  const id = `${sub}.${operatorId}`;
-  const wasm = fs.readFileSync(path.join(WASM_DIR, wasmFile));
-  const pk = (await (operator as any).connection.signer.getPublicKey(operatorId, "testnet")) ?? null;
+async function accountExists(id: string): Promise<boolean> {
+  try {
+    await (await near()).connection.provider.query({ request_type: "view_account", finality: "final", account_id: id });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  let exists = false;
-  try { await (await (operator as any).connection.provider.query({ request_type: "view_account", finality: "final", account_id: id })); exists = true; } catch {}
+async function deployOne(operator: Account, sub: string, wasmFile: string, initArgs: object): Promise<string> {
+  const id = `${sub}.${operator.accountId}`;
+  const wasm = new Uint8Array(fs.readFileSync(path.join(WASM_DIR, wasmFile)));
+  const existed = await accountExists(id);
 
-  if (!exists) {
+  if (!existed) {
     const key = KeyPair.fromRandom("ed25519");
-    await (operator as any).connection.signer.keyStore?.setKey?.("testnet", id, key);
     const r = await operator.createAccount(id, key.getPublicKey(), 3n * NEAR);
     console.log(`created ${id}  ${explorerTx(txHash(r))}`);
-    // keep the sub-account key so we can redeploy later
-    fs.mkdirSync(".keys", { recursive: true });
-    fs.writeFileSync(`.keys/${id}.json`, JSON.stringify({ accountId: id, privateKey: key.toString() }, null, 2));
+    fs.mkdirSync(KEYS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(KEYS_DIR, `${id}.json`), JSON.stringify({ accountId: id, privateKey: key.toString() }, null, 2));
   } else if (!hasFlag("redeploy")) {
-    console.log(`${id} exists; pass --redeploy to overwrite code`);
+    console.log(`${id} already exists; pass --redeploy to overwrite its code`);
     return id;
   }
 
-  const { agentAccount } = await import("./near.js");
-  const acc = await agentAccount(id);
-  const r = await acc.deployContract(new Uint8Array(wasm));
+  const acc = await agentAccount(id); // reuses the saved sub-account key
+  const r = await acc.deployContract(wasm);
   console.log(`deployed ${wasmFile} → ${id}  ${explorerTx(txHash(r))}`);
-  if (!exists) {
-    const i = await call(acc, id, initMethod, initArgs);
+  if (!existed) {
+    const i = await call(acc, id, "new", initArgs);
     console.log(`initialised ${id}  ${explorerTx(txHash(i))}`);
   }
-  void pk;
   return id;
 }
 
 async function main() {
   const operator = await accountFromEnv("OPERATOR");
-  const operatorId = operator.accountId;
   const feeBps = Number(arg("fee-bps", "1000"));
 
-  const token = await deployOne(operatorId, operator, "usdc", "mock_usdc.wasm", "new", {});
-  const hub = await deployOne(operatorId, operator, "hub", "agenthub.wasm", "new", {
-    owner: operatorId,
-    token,
-    fee_bps: feeBps,
-  });
+  const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {});
+  const hub = await deployOne(operator, "hub", "agenthub.wasm", { owner: operator.accountId, token, fee_bps: feeBps });
 
-  // The hub must be registered on the token to receive and send it.
-  const r = await call(operator, token, "storage_deposit", { account_id: hub }, { deposit: NEAR / 100n });
-  console.log(`storage registered for hub on token  ${explorerTx(txHash(r))}`);
-  const r2 = await call(operator, token, "storage_deposit", { account_id: operatorId }, { deposit: NEAR / 100n });
-  console.log(`storage registered for operator on token  ${explorerTx(txHash(r2))}`);
+  // Both the hub and the operator must be registered on the token to hold it.
+  for (const account_id of [hub, operator.accountId]) {
+    const r = await call(operator, token, "storage_deposit", { account_id }, { deposit: NEAR / 100n });
+    console.log(`storage registered for ${account_id}  ${explorerTx(txHash(r))}`);
+  }
 
   console.log("\nAdd to .env:");
   console.log(`HUB_CONTRACT=${hub}`);
