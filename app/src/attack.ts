@@ -2,7 +2,7 @@
 // injection, stolen key, whatever) and try to do damage with ITS key.
 //   npm run attack -- --name extractor
 // Expected: everything outside the policy fails; one small allowed withdrawal succeeds.
-import { agentAccount, call, env, arg, view, usdc, fmtUsdc, ONE_YOCTO } from "./near.js";
+import { agentAccount, call, env, arg, view, usdc, fmtUsdc } from "./near.js";
 
 type Row = { attack: string; expected: string; result: string; ok: boolean };
 
@@ -11,9 +11,21 @@ async function attempt(rows: Row[], attack: string, expected: string, fn: () => 
     await fn();
     rows.push({ attack, expected, result: shouldFail ? "SUCCEEDED (bad)" : "succeeded", ok: !shouldFail });
   } catch (e: any) {
-    const msg: string = (e?.message ?? String(e)).split("\n")[0].slice(0, 110);
-    rows.push({ attack, expected, result: `blocked: ${msg}`, ok: shouldFail });
+    rows.push({ attack, expected, result: `blocked: ${reason(e)}`, ok: shouldFail });
   }
+}
+
+/** Turn a near-api-js error into the one line a human wants to read. */
+function reason(e: any): string {
+  const exec = e?.kind?.kind?.FunctionCallError?.ExecutionError ?? e?.kind?.FunctionCallError?.ExecutionError;
+  if (exec) return String(exec).replace(/^Smart contract panicked: /, "contract: ");
+  const t = e?.type ?? "";
+  if (t === "RequiresFullAccess") return "protocol: this key is not a full-access key";
+  if (t === "ReceiverMismatch") return "protocol: key is only valid for the hub contract";
+  if (t === "MethodNameMismatch") return "protocol: method not in the key's allowed list";
+  if (t === "DepositWithFunctionCall") return "protocol: function-call keys cannot attach deposits";
+  if (t === "AccessKeyNotFound") return "protocol: no such key on the account";
+  return (t ? t + ": " : "") + String(e?.message ?? e).split("\n")[0].slice(0, 100);
 }
 
 async function main() {
@@ -35,7 +47,7 @@ async function main() {
     () => call(agent, hub, "mint_cert", { agent: agentId, skill: "document-extraction", level: 3, score_uri: "forged" }), true);
 
   await attempt(rows, "Call the token contract directly (ft_transfer)", "key rejected: wrong receiver",
-    () => call(agent, token, "ft_transfer", { receiver_id: attacker, amount: "1" }, { deposit: ONE_YOCTO }), true);
+    () => call(agent, token, "ft_transfer", { receiver_id: attacker, amount: "1" }), true);
 
   await attempt(rows, "Send NEAR out of the agent account", "no full-access key exists",
     () => agent.sendMoney(attacker, 1n), true);

@@ -28,7 +28,7 @@ jobs:
         run: |
           npm install -g binaryen
           mkdir -p ../out
-          for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
+          for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug --enable-bulk-memory --enable-nontrapping-float-to-int -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
           ls -la ../out
       - uses: actions/upload-artifact@v4
         with:

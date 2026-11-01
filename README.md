@@ -28,7 +28,7 @@ Prerequisites: Node 22+, Rust with the `wasm32-unknown-unknown` target, a testne
 ```sh
 git clone https://github.com/scribbler421/agenthub && cd agenthub
 cd contracts && cargo test --workspace && cargo build --release --target wasm32-unknown-unknown --workspace
-npm install -g binaryen && mkdir -p ../out && for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
+npm install -g binaryen && mkdir -p ../out && for f in agenthub mock_usdc; do wasm-opt -Oz --strip-debug --enable-bulk-memory --enable-nontrapping-float-to-int -o ../out/$f.wasm target/wasm32-unknown-unknown/release/$f.wasm; done
 cd ../app && npm install && cp .env.example .env   # fill in OPERATOR_*, CLIENT_*, ANTHROPIC_API_KEY
 ```
 

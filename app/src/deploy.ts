@@ -48,7 +48,7 @@ async function main() {
   const operator = await accountFromEnv("OPERATOR");
   const feeBps = Number(arg("fee-bps", "1000"));
 
-  const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {}, 3n * NEAR);
+  const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {}, 2n * NEAR + NEAR / 2n);
   const hub = await deployOne(operator, "hub", "agenthub.wasm", { owner: operator.accountId, token, fee_bps: feeBps }, 5n * NEAR);
 
   // Both the hub and the operator must be registered on the token to hold it.

@@ -1,0 +1,4 @@
+# `--cfg near` makes near-sdk use the real host functions (panic messages, hashes).
+# cargo-near sets this automatically; a plain cargo build needs it here.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "near", "-C", "link-arg=-s"]

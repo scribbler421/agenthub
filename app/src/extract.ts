@@ -1,6 +1,7 @@
 // Document extraction: the one skill AgentHub certifies in v1.
 // Same code path is used by the cert runner (benchmark) and the agent (real jobs).
 import "dotenv/config";
+import "./proxy.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 export const FIELDS = ["vendor", "invoice_number", "invoice_date", "currency", "total"] as const;
@@ -31,18 +32,33 @@ const client = new Anthropic();
 const MODEL = process.env.LLM_MODEL ?? "claude-haiku-5-5";
 
 export async function extract(text: string): Promise<Extracted> {
-  const res = await client.messages.create({
-    model: MODEL,
-    max_tokens: 600,
-    system: SYSTEM,
-    messages: [{ role: "user", content: `<document>\n${text}\n</document>` }],
-  });
-  const raw = res.content.map((b) => ("text" in b ? b.text : "")).join("");
-  const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
-  const parsed = JSON.parse(json);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await client.messages.create({
+      model: MODEL,
+      max_tokens: 4000, // the model may think for several hundred tokens on hard documents
+      system: SYSTEM,
+      messages: [
+        { role: "user", content: `<document>\n${text}\n</document>${attempt ? "\n\nYour previous answer was not valid JSON. Reply with the JSON object only." : ""}` },
+      ],
+    });
+    const raw = res.content.map((b) => ("text" in b ? b.text : "")).join("").replace(/```(?:json)?/g, "");
+    try {
+      return coerce(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+    } catch (e) {
+      lastErr = e;
+      if (process.env.DEBUG) console.error("unparseable model output:", JSON.stringify({ stop: res.stop_reason, usage: res.usage, content: res.content }));
+    }
+  }
+  // Two malformed answers: score as a blank, confident-wrong answer rather than crash a run.
+  console.error("extract: giving up after 2 attempts:", (lastErr as Error)?.message);
+  return coerce({});
+}
+
+function coerce(parsed: any): Extracted {
   const out = {} as Extracted;
   for (const f of FIELDS) {
-    const v = parsed[f] ?? {};
+    const v = parsed?.[f] ?? {};
     out[f] = {
       value: v.value === undefined || v.value === null ? null : String(v.value),
       confidence: v.confidence === "unsure" ? "unsure" : "confident",

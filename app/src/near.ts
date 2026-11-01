@@ -1,5 +1,6 @@
 // Thin wrapper around near-api-js for the scripts in this folder.
 import "dotenv/config";
+import "./proxy.js";
 import { connect, keyStores, KeyPair, type Account, type Near } from "near-api-js";
 import fs from "node:fs";
 import path from "node:path";
