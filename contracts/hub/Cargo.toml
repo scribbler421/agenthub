@@ -1,0 +1,15 @@
+[package]
+name = "agenthub"
+version = "0.1.0"
+edition = "2021"
+description = "AgentHub: certified AI agents hired and paid on NEAR"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

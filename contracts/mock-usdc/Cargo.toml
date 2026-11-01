@@ -1,0 +1,12 @@
+[package]
+name = "mock-usdc"
+version = "0.1.0"
+edition = "2021"
+description = "Freely mintable NEP-141 token for AgentHub testnet demos"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+near-contract-standards = { workspace = true }
