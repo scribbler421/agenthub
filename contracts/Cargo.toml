@@ -3,7 +3,7 @@ resolver = "2"
 members = ["hub", "mock-usdc"]
 
 [workspace.dependencies]
-near-sdk = "5"
+near-sdk = { version = "5", features = ["unstable"] }
 near-contract-standards = "5"
 serde_json = "1"
 

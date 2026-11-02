@@ -3,6 +3,7 @@
 import "dotenv/config";
 import "./proxy.js";
 import Anthropic from "@anthropic-ai/sdk";
+import { completeSigned, NEARAI_MODEL, type ExecutionProof } from "./nearai.js";
 
 export const FIELDS = ["vendor", "invoice_number", "invoice_date", "currency", "total"] as const;
 export type Field = (typeof FIELDS)[number];
@@ -30,29 +31,45 @@ Rules:
 
 const client = new Anthropic();
 const MODEL = process.env.LLM_MODEL ?? "claude-haiku-5-5";
+/** "anthropic" (default) or "nearai" (TEE inference with a signed execution proof). */
+export const PROVIDER = process.env.LLM_PROVIDER ?? "anthropic";
+export const MODEL_NAME = PROVIDER === "nearai" ? NEARAI_MODEL : MODEL;
+
+export interface ExtractResult { fields: Extracted; proof?: ExecutionProof }
 
 export async function extract(text: string): Promise<Extracted> {
+  return (await extractWithProof(text)).fields;
+}
+
+/** Same extraction, but with the TEE proof when the provider is nearai. */
+export async function extractWithProof(text: string): Promise<ExtractResult> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await client.messages.create({
+    const user = `<document>\n${text}\n</document>${attempt ? "\n\nYour previous answer was not valid JSON. Reply with the JSON object only." : ""}`;
+    let raw: string; let proof: ExecutionProof | undefined; let debug: any;
+    if (PROVIDER === "nearai") {
+      const r = await completeSigned(SYSTEM, user);
+      raw = r.text; proof = r.proof; debug = r.body;
+    } else {
+      const res = await client.messages.create({
       model: MODEL,
       max_tokens: 4000, // the model may think for several hundred tokens on hard documents
       system: SYSTEM,
-      messages: [
-        { role: "user", content: `<document>\n${text}\n</document>${attempt ? "\n\nYour previous answer was not valid JSON. Reply with the JSON object only." : ""}` },
-      ],
-    });
-    const raw = res.content.map((b) => ("text" in b ? b.text : "")).join("").replace(/```(?:json)?/g, "");
+        messages: [{ role: "user", content: user }],
+      });
+      raw = res.content.map((b) => ("text" in b ? b.text : "")).join(""); debug = res;
+    }
+    raw = raw.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/```(?:json)?/g, "");
     try {
-      return coerce(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+      return { fields: coerce(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1))), proof };
     } catch (e) {
       lastErr = e;
-      if (process.env.DEBUG) console.error("unparseable model output:", JSON.stringify({ stop: res.stop_reason, usage: res.usage, content: res.content }));
+      if (process.env.DEBUG) console.error("unparseable model output:", JSON.stringify(debug).slice(0, 1500));
     }
   }
   // Two malformed answers: score as a blank, confident-wrong answer rather than crash a run.
   console.error("extract: giving up after 2 attempts:", (lastErr as Error)?.message);
-  return coerce({});
+  return { fields: coerce({}) };
 }
 
 function coerce(parsed: any): Extracted {

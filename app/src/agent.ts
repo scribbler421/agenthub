@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { agentAccount, call, env, arg, hasFlag, view, txHash, explorerTx, fmtUsdc } from "./near.js";
-import { extract } from "./extract.js";
+import { extractWithProof, PROVIDER, MODEL_NAME } from "./extract.js";
 
 const SKILL = "document-extraction";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -29,20 +29,24 @@ async function work(hub: string, agentId: string): Promise<number> {
     if (frag && frag !== `sha256=${hash}`) throw new Error(`spec hash mismatch for job #${job.id}`);
     const spec = JSON.parse(specBytes.toString("utf8")) as { documents: { id: string; text: string }[] };
 
+    if (job.require_proof && PROVIDER !== "nearai") { console.log(`job #${job.id}: requires a TEE proof but this agent runs on ${PROVIDER}; skipping`); continue; }
+
     const results = [];
     for (const d of spec.documents) {
-      const fields = await extract(d.text);
-      results.push({ id: d.id, fields });
-      console.log(`  ${d.id}: ${fields.vendor.value} / ${fields.invoice_number.value} / ${fields.total.value} ${fields.currency.value}`);
+      const { fields, proof } = await extractWithProof(d.text);
+      results.push({ id: d.id, fields, proof });
+      console.log(`  ${d.id}: ${fields.vendor.value} / ${fields.invoice_number.value} / ${fields.total.value} ${fields.currency.value}${proof ? `  [TEE ${proof.signature_kind} ${proof.signing_address.slice(0, 10)}…]` : ""}`);
     }
 
     fs.mkdirSync("out", { recursive: true });
     const outPath = `out/job-${job.id}.json`;
-    const body = JSON.stringify({ job_id: job.id, agent: agentId, results }, null, 2);
+    const body = JSON.stringify({ job_id: job.id, agent: agentId, provider: PROVIDER, model: MODEL_NAME, results }, null, 2);
     fs.writeFileSync(outPath, body);
     const outHash = crypto.createHash("sha256").update(body).digest("hex");
-    const s = await call(agent, hub, "submit", { job_id: job.id, output_uri: `${outPath}#sha256=${outHash}` });
-    console.log(`  submitted ${outPath}  ${explorerTx(txHash(s))}`);
+    // One proof goes on-chain: the last document's (every per-document proof is in the output file).
+    const proof = results.map((r) => r.proof).filter(Boolean).at(-1) ?? null;
+    const s = await call(agent, hub, "submit", { job_id: job.id, output_uri: `${outPath}#sha256=${outHash}`, proof });
+    console.log(`  submitted ${outPath}${proof ? " with TEE proof (verified on-chain)" : ""}  ${explorerTx(txHash(s))}`);
     done++;
   }
   return done;

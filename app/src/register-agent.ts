@@ -13,7 +13,8 @@ async function main() {
   const name = arg("name");
   const cap = arg("cap", "50"); // USDC per day
   const allow = arg("allow", operator.accountId).split(",");
-  const model = arg("model", process.env.LLM_MODEL ?? "claude-haiku-5-5");
+  const model = arg("model", process.env.LLM_PROVIDER === "nearai" ? (process.env.NEARAI_MODEL ?? "zai-org/GLM-5.1-FP8") : (process.env.LLM_MODEL ?? "claude-haiku-5-5"));
+  const rate = arg("rate", "3");
   const agentId = `${name}.${hub}`;
 
   const key = KeyPair.fromRandom("ed25519");
@@ -28,6 +29,7 @@ async function main() {
       skills: ["document-extraction"],
       withdraw_cap_per_day: usdc(cap),
       withdraw_allowlist: allow,
+      rate: usdc(rate),
     },
     { deposit: NEAR / 2n, gas: 150_000_000_000_000n },
   );

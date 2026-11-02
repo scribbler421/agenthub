@@ -38,7 +38,12 @@ enum StorageKey {
     Jobs,
     Balances,
     WithdrawnToday,
+    AgentsV2,
+    JobsV2,
+    TrustedSigners,
 }
+
+pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Grandmaster"];
 
 // ---------------------------------------------------------------------------
 // Data
@@ -57,6 +62,41 @@ pub struct AgentProfile {
     pub withdraw_cap_per_day: U128,
     pub withdraw_allowlist: Vec<AccountId>,
     pub created_at: u64,
+    /// Sum of client ratings over approved jobs (avg = rating_sum / jobs_approved).
+    pub rating_sum: u32,
+    pub jobs_rejected: u32,
+    /// Asking price per job, token base units. Informational; the client sets the budget.
+    pub rate: U128,
+}
+
+/// Rank is computed from the account's own work history. Exams never raise it.
+#[near(serializers = [json])]
+pub struct Rank {
+    pub rank: u8,
+    pub name: String,
+    pub jobs_approved: u32,
+    pub approval_pct: u32,
+    pub avg_rating_x10: u32,
+    pub next: Option<String>,
+}
+
+/// A TEE execution proof from NEAR AI Cloud: the enclave signed
+/// "<model>:<sha256(request)>:<sha256(response)>" (EIP-191, secp256k1).
+/// The contract recovers the signer with `ecrecover` and checks it is a
+/// trusted (attested) signer registered by the owner.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug)]
+pub struct ExecutionProof {
+    pub model: String,
+    pub chat_id: String,
+    pub request_hash: String,
+    pub response_hash: String,
+    /// 65-byte r||s||v, hex (0x optional)
+    pub signature: String,
+    /// 20-byte ethereum-style address, hex (0x optional), lowercase
+    pub signing_address: String,
+    /// "provider_tee" or "gateway"
+    pub signature_kind: String,
 }
 
 #[near(serializers = [borsh, json])]
@@ -96,6 +136,11 @@ pub struct Job {
     pub rating: Option<u8>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Minimum guild rank (0..=3) the agent must hold to accept.
+    pub min_rank: u8,
+    /// If true, `submit` must carry a valid TEE execution proof.
+    pub require_proof: bool,
+    pub proof: Option<ExecutionProof>,
 }
 
 /// `msg` of the `ft_transfer_call` that funds a job.
@@ -104,6 +149,8 @@ pub struct PostJobMsg {
     pub skill: String,
     pub min_level: CertLevel,
     pub spec_uri: String,
+    pub min_rank: Option<u8>,
+    pub require_proof: Option<bool>,
 }
 
 /// NEP-177 token metadata (subset) so wallets and explorers render certs.
@@ -159,6 +206,53 @@ pub struct AgentHub {
     next_job_id: JobId,
     balances: LookupMap<AccountId, u128>,
     withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+    /// Attested TEE signer addresses (lowercase hex, no 0x) → label.
+    trusted_signers: IterableMap<String, String>,
+}
+
+/// Pre-rank/proof layout, read once by `migrate`.
+mod v1 {
+    use super::*;
+    #[near(serializers = [borsh])]
+    pub struct AgentProfile {
+        pub account: AccountId,
+        pub owner: AccountId,
+        pub model: String,
+        pub skills: Vec<String>,
+        pub jobs_completed: u32,
+        pub jobs_approved: u32,
+        pub total_earned: U128,
+        pub withdraw_cap_per_day: U128,
+        pub withdraw_allowlist: Vec<AccountId>,
+        pub created_at: u64,
+    }
+    #[near(serializers = [borsh])]
+    pub struct Job {
+        pub id: JobId,
+        pub client: AccountId,
+        pub skill: String,
+        pub min_level: CertLevel,
+        pub budget: U128,
+        pub spec_uri: String,
+        pub agent: Option<AccountId>,
+        pub output_uri: Option<String>,
+        pub status: JobStatus,
+        pub rating: Option<u8>,
+        pub created_at: u64,
+        pub updated_at: u64,
+    }
+    #[near(serializers = [borsh])]
+    pub struct State {
+        pub owner: AccountId,
+        pub token: AccountId,
+        pub fee_bps: u16,
+        pub agents: IterableMap<AccountId, AgentProfile>,
+        pub certs: LookupMap<AccountId, Vec<Cert>>,
+        pub jobs: IterableMap<JobId, Job>,
+        pub next_job_id: JobId,
+        pub balances: LookupMap<AccountId, u128>,
+        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+    }
 }
 
 #[near]
@@ -178,6 +272,40 @@ impl AgentHub {
             next_job_id: 0,
             balances: LookupMap::new(StorageKey::Balances),
             withdrawn_today: LookupMap::new(StorageKey::WithdrawnToday),
+            trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
+        }
+    }
+
+    /// Upgrades v1 state (no ranks/proofs) in place. Owner-only via #[private].
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        let old: v1::State = env::state_read().expect("no v1 state");
+        let mut agents = IterableMap::new(StorageKey::AgentsV2);
+        for (k, a) in old.agents.iter() {
+            agents.insert(k.clone(), AgentProfile {
+                account: a.account.clone(), owner: a.owner.clone(), model: a.model.clone(), skills: a.skills.clone(),
+                jobs_completed: a.jobs_completed, jobs_approved: a.jobs_approved, total_earned: a.total_earned,
+                withdraw_cap_per_day: a.withdraw_cap_per_day, withdraw_allowlist: a.withdraw_allowlist.clone(),
+                created_at: a.created_at,
+                // Ratings were 5/5 on every approved job so far; carry that forward.
+                rating_sum: a.jobs_approved * 5, jobs_rejected: a.jobs_completed - a.jobs_approved, rate: U128(0),
+            });
+        }
+        let mut jobs = IterableMap::new(StorageKey::JobsV2);
+        for (k, j) in old.jobs.iter() {
+            jobs.insert(*k, Job {
+                id: j.id, client: j.client.clone(), skill: j.skill.clone(), min_level: j.min_level, budget: j.budget,
+                spec_uri: j.spec_uri.clone(), agent: j.agent.clone(), output_uri: j.output_uri.clone(), status: j.status.clone(),
+                rating: j.rating, created_at: j.created_at, updated_at: j.updated_at,
+                min_rank: 0, require_proof: false, proof: None,
+            });
+        }
+        env::log_str(&format!("migrated {} agents, {} jobs", agents.len(), jobs.len()));
+        Self {
+            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs,
+            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
         }
     }
 
@@ -196,6 +324,7 @@ impl AgentHub {
         skills: Vec<String>,
         withdraw_cap_per_day: U128,
         withdraw_allowlist: Vec<AccountId>,
+        rate: Option<U128>,
     ) -> Promise {
         let deposit = env::attached_deposit();
         require!(deposit >= MIN_AGENT_DEPOSIT, "attach at least 0.1 NEAR");
@@ -221,6 +350,9 @@ impl AgentHub {
             withdraw_cap_per_day,
             withdraw_allowlist,
             created_at: env::block_timestamp(),
+            rating_sum: 0,
+            jobs_rejected: 0,
+            rate: rate.unwrap_or(U128(0)),
         };
 
         Promise::new(account)
@@ -274,6 +406,19 @@ impl AgentHub {
             .take(limit.unwrap_or(50) as usize)
             .cloned()
             .collect()
+    }
+
+    /// Guild rank, computed from the account's history (see `rank_of`).
+    pub fn get_rank(&self, agent: AccountId) -> Option<Rank> {
+        self.agents.get(&agent).map(Self::rank_of)
+    }
+
+    /// Agent owner sets the asking price.
+    pub fn set_rate(&mut self, agent: AccountId, rate: U128) {
+        let caller = env::predecessor_account_id();
+        let p = self.agents.get_mut(&agent).expect("unknown agent");
+        require!(p.owner == caller, "only the agent's owner can set the rate");
+        p.rate = rate;
     }
 
     // ------------------------------------------------------------------ Certs
@@ -398,6 +543,8 @@ impl AgentHub {
         require!(amount.0 > 0, "budget must be > 0");
         let post: PostJobMsg = serde_json::from_str(&msg).expect("bad msg: expected {skill,min_level,spec_uri}");
         require!((1..=3).contains(&post.min_level), "min_level must be 1..=3");
+        let min_rank = post.min_rank.unwrap_or(0);
+        require!(min_rank <= 3, "min_rank must be 0..=3");
 
         let id = self.next_job_id;
         self.next_job_id += 1;
@@ -415,6 +562,9 @@ impl AgentHub {
             rating: None,
             created_at: now,
             updated_at: now,
+            min_rank,
+            require_proof: post.require_proof.unwrap_or(false),
+            proof: None,
         };
         self.jobs.insert(id, job);
         self.log_job(id, "job_posted");
@@ -425,15 +575,17 @@ impl AgentHub {
     pub fn accept_job(&mut self, job_id: JobId) {
         let agent = env::predecessor_account_id();
         require!(self.agents.get(&agent).is_some(), "not a registered agent");
-        let (skill, min_level) = {
+        let (skill, min_level, min_rank) = {
             let job = self.jobs.get(&job_id).expect("no such job");
             require!(job.status == JobStatus::Open, "job is not open");
-            (job.skill.clone(), job.min_level)
+            (job.skill.clone(), job.min_level, job.min_rank)
         };
         require!(
             self.is_certified(agent.clone(), skill, min_level),
             "agent is not certified for this job"
         );
+        let rank = Self::rank_of(self.agents.get(&agent).unwrap());
+        require!(rank.rank >= min_rank, "agent's guild rank is too low for this job");
         let job = self.jobs.get_mut(&job_id).unwrap();
         job.agent = Some(agent);
         job.status = JobStatus::Accepted;
@@ -441,12 +593,21 @@ impl AgentHub {
         self.log_job(job_id, "job_accepted");
     }
 
-    /// Agent submits where the output lives (hash or URI).
-    pub fn submit(&mut self, job_id: JobId, output_uri: String) {
+    /// Agent submits where the output lives (hash or URI), optionally with a
+    /// TEE execution proof. If the job requires a proof, a missing or invalid
+    /// one fails the call: the contract will not accept unverified work.
+    pub fn submit(&mut self, job_id: JobId, output_uri: String, proof: Option<ExecutionProof>) {
         let agent = env::predecessor_account_id();
+        if let Some(p) = &proof {
+            let signer = Self::recover_signer(p);
+            require!(signer == normalize_hex(&p.signing_address), "proof: signature does not recover to signing_address");
+            require!(self.trusted_signers.contains_key(&signer), "proof: signer is not an attested TEE registered on this hub");
+        }
         let job = self.jobs.get_mut(&job_id).expect("no such job");
         require!(job.status == JobStatus::Accepted, "job is not accepted");
         require!(job.agent.as_ref() == Some(&agent), "not this job's agent");
+        require!(!job.require_proof || proof.is_some(), "this job requires a TEE execution proof");
+        job.proof = proof;
         job.output_uri = Some(output_uri);
         job.status = JobStatus::Submitted;
         job.updated_at = env::block_timestamp();
@@ -476,6 +637,7 @@ impl AgentHub {
         let profile = self.agents.get_mut(&agent).expect("agent vanished");
         profile.jobs_completed += 1;
         profile.jobs_approved += 1;
+        profile.rating_sum += rating as u32;
         profile.total_earned = U128(profile.total_earned.0 + payout);
         self.log_job(job_id, "job_approved");
     }
@@ -494,6 +656,7 @@ impl AgentHub {
         };
         if let Some(p) = self.agents.get_mut(&agent) {
             p.jobs_completed += 1;
+            p.jobs_rejected += 1;
         }
         env::log_str(&format!("job {} rejected: {}", job_id, reason));
         self.log_job(job_id, "job_rejected");
@@ -607,6 +770,38 @@ impl AgentHub {
         self.ft_transfer(to, amount.0, "platform fees".into())
     }
 
+    // ------------------------------------------------ Trusted TEE signers
+
+    /// Owner registers a signer address after verifying its attestation
+    /// off-chain (NEAR AI Cloud attestation report + NVIDIA/Intel evidence).
+    pub fn add_trusted_signer(&mut self, address: String, label: String) {
+        self.assert_owner();
+        let a = normalize_hex(&address);
+        require!(a.len() == 40, "address must be 20 bytes hex");
+        self.trusted_signers.insert(a, label);
+    }
+
+    pub fn remove_trusted_signer(&mut self, address: String) {
+        self.assert_owner();
+        self.trusted_signers.remove(&normalize_hex(&address));
+    }
+
+    pub fn list_trusted_signers(&self) -> Vec<(String, String)> {
+        self.trusted_signers.iter().map(|(k, v)| (format!("0x{}", k), v.clone())).collect()
+    }
+
+    /// Pure check: does this proof recover to its claimed signer, and is that signer trusted?
+    pub fn verify_proof(&self, proof: ExecutionProof) -> (bool, String) {
+        let signer = Self::recover_signer(&proof);
+        if signer != normalize_hex(&proof.signing_address) {
+            return (false, "signature does not recover to signing_address".into());
+        }
+        match self.trusted_signers.get(&signer) {
+            Some(label) => (true, format!("signed by attested TEE {} ({})", proof.signing_address, label)),
+            None => (false, "signer is not a trusted TEE on this hub".into()),
+        }
+    }
+
     pub fn get_balance(&self, account: AccountId) -> U128 {
         U128(self.balances.get(&account).copied().unwrap_or(0))
     }
@@ -621,6 +816,43 @@ impl AgentHub {
     }
 
     // ---------------------------------------------------------------- Helpers
+
+    pub(crate) fn rank_of(p: &AgentProfile) -> Rank {
+        let approved = p.jobs_approved;
+        let pct = if p.jobs_completed > 0 { approved * 100 / p.jobs_completed } else { 0 };
+        let avg10 = if approved > 0 { p.rating_sum * 10 / approved } else { 0 };
+        let rank: u8 = if approved >= 100 && pct >= 97 && avg10 >= 47 { 3 }
+            else if approved >= 25 && pct >= 95 && avg10 >= 45 { 2 }
+            else if approved >= 5 && pct >= 90 { 1 }
+            else { 0 };
+        let next = match rank {
+            0 => Some(format!("Journeyman: {} more approved jobs, 90%+ approval", 5u32.saturating_sub(approved))),
+            1 => Some(format!("Master: {} more approved jobs, 95%+ approval, 4.5+ rating", 25u32.saturating_sub(approved))),
+            2 => Some(format!("Grandmaster: {} more approved jobs, 97%+ approval, 4.7+ rating", 100u32.saturating_sub(approved))),
+            _ => None,
+        };
+        Rank { rank, name: RANK_NAMES[rank as usize].into(), jobs_approved: approved, approval_pct: pct, avg_rating_x10: avg10, next }
+    }
+
+    /// EIP-191 recovery of the TEE signer: keccak256("\x19Ethereum Signed Message:\n" + len + text),
+    /// ecrecover → keccak256(pubkey)[12..] → lowercase hex (no 0x).
+    fn recover_signer(p: &ExecutionProof) -> String {
+        let text = if p.signature_kind == "provider_tee" {
+            format!("{}:{}:{}", p.model, p.request_hash, p.response_hash)
+        } else {
+            format!("{}:{}", p.request_hash, p.response_hash)
+        };
+        let mut msg = format!("\x19Ethereum Signed Message:\n{}", text.len()).into_bytes();
+        msg.extend_from_slice(text.as_bytes());
+        let hash = env::keccak256_array(&msg);
+        let sig = hex_decode(&normalize_hex(&p.signature));
+        require!(sig.len() == 65, "proof: signature must be 65 bytes");
+        let mut v = sig[64];
+        if v >= 27 { v -= 27; }
+        let pubkey = env::ecrecover(&hash, &sig[..64], v, false).expect("proof: ecrecover failed");
+        let h = env::keccak256_array(&pubkey);
+        hex_encode(&h[12..])
+    }
 
     fn assert_owner(&self) {
         require!(env::predecessor_account_id() == self.owner, "owner only");
@@ -677,6 +909,19 @@ impl AgentHub {
     }
 }
 
+fn normalize_hex(s: &str) -> String {
+    s.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase()
+}
+
+fn hex_decode(s: &str) -> Vec<u8> {
+    require!(s.len() % 2 == 0, "bad hex");
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("bad hex")).collect()
+}
+
+fn hex_encode(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -723,6 +968,9 @@ mod tests {
                 withdraw_cap_per_day: U128(3_000_000), // 3 USDC/day
                 withdraw_allowlist: vec![accounts(1)],
                 created_at: 0,
+                rating_sum: 0,
+                jobs_rejected: 0,
+                rate: U128(0),
             },
         );
         c
@@ -751,7 +999,7 @@ mod tests {
 
         testing_env!(ctx(agent()).build());
         c.accept_job(id);
-        c.submit(id, "ipfs://output".into());
+        c.submit(id, "ipfs://output".into(), None);
 
         testing_env!(ctx(accounts(2)).build());
         c.approve(id, 5);
@@ -858,6 +1106,72 @@ mod tests {
     }
 
     #[test]
+    fn ranks_follow_the_record() {
+        let mut c = setup();
+        let p = c.agents.get_mut(&agent()).unwrap();
+        assert_eq!(AgentHub::rank_of(p).name, "Apprentice");
+        p.jobs_completed = 5; p.jobs_approved = 5; p.rating_sum = 20;
+        assert_eq!(AgentHub::rank_of(p).name, "Journeyman");
+        p.jobs_completed = 26; p.jobs_approved = 25; p.rating_sum = 115; // 4.6 avg, 96%
+        assert_eq!(AgentHub::rank_of(p).name, "Master");
+        p.jobs_completed = 100; p.jobs_approved = 100; p.rating_sum = 480;
+        assert_eq!(AgentHub::rank_of(p).name, "Grandmaster");
+        p.jobs_completed = 10; p.jobs_approved = 8; p.rating_sum = 40; // 80%: back to Apprentice
+        assert_eq!(AgentHub::rank_of(p).rank, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "guild rank is too low")]
+    fn rank_gates_jobs() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 3, "".into());
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","min_rank":2}"#.into());
+        testing_env!(ctx(agent()).build());
+        c.accept_job(0);
+    }
+
+    // A real EIP-191 signature produced off-chain (secp256k1 test key) over
+    // "m:aa:bb" so the on-chain recovery path is exercised end to end.
+    const PROOF_SIGNER: &str = "19e7e376e7c213b7e7e7e46cc70a5dd086daff2a";
+    const PROOF_SIG: &str = "f1c3318cac08d7c1ec13de6d99f77139ee4349a6d519bbb3f4e9a9b6f29b3ee547e183ae5e033c448ee88a205c1f20c3df9c240448948f03f93a4d0819e5bc2d1c";
+
+    fn proof() -> ExecutionProof {
+        ExecutionProof {
+            model: "m".into(), chat_id: "c".into(), request_hash: "aa".into(), response_hash: "bb".into(),
+            signature: PROOF_SIG.into(), signing_address: PROOF_SIGNER.into(), signature_kind: "provider_tee".into(),
+        }
+    }
+
+    #[test]
+    fn proof_recovers_and_requires_trust() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        let (ok, why) = c.verify_proof(proof());
+        assert!(!ok, "{}", why);
+        c.add_trusted_signer(PROOF_SIGNER.into(), "test enclave".into());
+        let (ok, why) = c.verify_proof(proof());
+        assert!(ok, "{}", why);
+        let mut bad = proof();
+        bad.response_hash = "cc".into();
+        assert!(!c.verify_proof(bad).0, "tampered hash must fail");
+    }
+
+    #[test]
+    #[should_panic(expected = "requires a TEE execution proof")]
+    fn proof_required_jobs_reject_bare_submit() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 1, "".into());
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","require_proof":true}"#.into());
+        testing_env!(ctx(agent()).build());
+        c.accept_job(0);
+        c.submit(0, "out".into(), None);
+    }
+
+    #[test]
     fn cancel_and_reject_refund_client() {
         let mut c = setup();
         testing_env!(ctx(accounts(0)).build());
@@ -871,7 +1185,7 @@ mod tests {
         let b = post_job(&mut c, accounts(2), 1_000_000, 1);
         testing_env!(ctx(agent()).build());
         c.accept_job(b);
-        c.submit(b, "x".into());
+        c.submit(b, "x".into(), None);
         testing_env!(ctx(accounts(2)).build());
         c.reject(b, "wrong totals".into());
         assert_eq!(c.get_job(b).unwrap().status, JobStatus::Rejected);

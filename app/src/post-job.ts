@@ -3,7 +3,7 @@
 //   npm run post-job -- --spec samples/job-invoices.json --budget 5 --min-level 2
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { accountFromEnv, call, env, arg, usdc, fmtUsdc, ONE_YOCTO, txHash, explorerTx, view } from "./near.js";
+import { accountFromEnv, call, env, arg, hasFlag, usdc, fmtUsdc, ONE_YOCTO, txHash, explorerTx, view } from "./near.js";
 
 async function main() {
   const client = await accountFromEnv("CLIENT");
@@ -12,6 +12,8 @@ async function main() {
   const specPath = arg("spec", "samples/job-invoices.json");
   const budget = arg("budget", "5");
   const minLevel = Number(arg("min-level", "2"));
+  const minRank = Number(arg("min-rank", "0"));
+  const requireProof = hasFlag("require-proof");
 
   const spec = fs.readFileSync(specPath);
   const hash = crypto.createHash("sha256").update(spec).digest("hex");
@@ -26,13 +28,13 @@ async function main() {
     console.log(`minted 100 demo USDC to ${client.accountId}  ${explorerTx(txHash(m))}`);
   }
 
-  const msg = JSON.stringify({ skill: "document-extraction", min_level: minLevel, spec_uri: specUri });
+  const msg = JSON.stringify({ skill: "document-extraction", min_level: minLevel, spec_uri: specUri, min_rank: minRank, require_proof: requireProof });
   const r = await call(client, token, "ft_transfer_call", { receiver_id: hub, amount: usdc(budget), msg }, { deposit: ONE_YOCTO, gas: 100_000_000_000_000n });
   console.log(`ft_transfer_call ${fmtUsdc(usdc(budget))} → ${hub}  ${explorerTx(txHash(r))}`);
 
   const jobs = await view(hub, "list_jobs", { status: "Open" });
   const job = jobs.at(-1);
-  console.log(`\njob #${job.id}  status ${job.status}  budget ${fmtUsdc(job.budget)}  min level ${job.min_level}`);
+  console.log(`\njob #${job.id}  status ${job.status}  budget ${fmtUsdc(job.budget)}  min level ${job.min_level}  min rank ${job.min_rank}  proof ${job.require_proof ? "required" : "optional"}`);
   console.log(`spec ${job.spec_uri}`);
 }
 
