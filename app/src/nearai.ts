@@ -32,12 +32,12 @@ export interface ExecutionProof {
 const sha256 = (b: Uint8Array) => crypto.createHash("sha256").update(b).digest("hex");
 
 /** fetch with retries for transient network failures (proxies drop long-lived sockets). */
-async function rfetch(url: string, init?: RequestInit, tries = 4): Promise<Response> {
+async function rfetch(url: string, init?: RequestInit, tries = 8): Promise<Response> {
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(url, init);
-      if (r.status >= 500 && i < tries - 1) { await new Promise((d) => setTimeout(d, 800 * (i + 1))); continue; }
+      if (r.status >= 500 && i < tries - 1) { await new Promise((d) => setTimeout(d, 3000 * (i + 1))); continue; } // 502 'model unavailable' can last a minute
       return r;
     } catch (e) { last = e; await new Promise((d) => setTimeout(d, 800 * (i + 1))); }
   }
