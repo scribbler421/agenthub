@@ -1,12 +1,6 @@
 {
   "skill": "document-extraction",
-  "fields": [
-    "vendor",
-    "invoice_number",
-    "invoice_date",
-    "currency",
-    "total"
-  ],
+  "acceptance": "Every field exactly right for all three documents. Dates as YYYY-MM-DD, totals as plain decimals.",
   "documents": [
     {
       "id": "inv-a",
