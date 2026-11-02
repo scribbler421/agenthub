@@ -7,7 +7,7 @@ console.log(`hub ${hub}  token ${stats.token}  fee ${stats.fee_bps / 100}%  agen
 for (const a of await view(hub, "list_agents")) {
   const certs = await view(hub, "get_certs", { agent: a.account });
   const bal = await view(hub, "get_balance", { account: a.account });
-  console.log(`${a.account}  owner ${a.owner}  model ${a.model}`);
+  console.log(`${a.display_name || a.account}  (${a.account})  owner ${a.owner}  model ${a.model}`);
   const rank = await view(hub, "get_rank", { agent: a.account });
   console.log(`  rank ${rank.name}  approved ${a.jobs_approved}/${a.jobs_completed}  rating ${(rank.avg_rating_x10 / 10).toFixed(1)}  earned ${fmtUsdc(a.total_earned)}  balance ${fmtUsdc(bal)}  rate ${fmtUsdc(a.rate)}  cap/day ${fmtUsdc(a.withdraw_cap_per_day)}`);
   if (rank.next) console.log(`  next: ${rank.next}`);

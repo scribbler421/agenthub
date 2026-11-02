@@ -15,6 +15,7 @@ async function main() {
   const allow = arg("allow", operator.accountId).split(",");
   const model = arg("model", process.env.LLM_PROVIDER === "nearai" ? (process.env.NEARAI_MODEL ?? "Qwen/Qwen3.8-27B") : (process.env.LLM_MODEL ?? "claude-haiku-5-5"));
   const rate = arg("rate", "3");
+  const displayName = arg("display-name", name);
   const agentId = `${name}.${hub}`;
 
   const key = KeyPair.fromRandom("ed25519");
@@ -30,6 +31,7 @@ async function main() {
       withdraw_cap_per_day: usdc(cap),
       withdraw_allowlist: allow,
       rate: usdc(rate),
+      display_name: displayName,
     },
     { deposit: NEAR / 2n, gas: 150_000_000_000_000n },
   );

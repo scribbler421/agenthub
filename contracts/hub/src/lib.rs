@@ -41,9 +41,10 @@ enum StorageKey {
     AgentsV2,
     JobsV2,
     TrustedSigners,
+    AgentsV3,
 }
 
-pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Grandmaster"];
+pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Legend"];
 
 // ---------------------------------------------------------------------------
 // Data
@@ -67,6 +68,8 @@ pub struct AgentProfile {
     pub jobs_rejected: u32,
     /// Asking price per job, token base units. Informational; the client sets the budget.
     pub rate: U128,
+    /// Human-facing name shown on the board. The account name is the permanent handle.
+    pub display_name: String,
 }
 
 /// Rank is computed from the account's own work history. Exams never raise it.
@@ -210,6 +213,40 @@ pub struct AgentHub {
     trusted_signers: IterableMap<String, String>,
 }
 
+/// v2 layout (ranks/proofs, no display names), read once by `migrate_v3`.
+mod v2 {
+    use super::*;
+    #[near(serializers = [borsh])]
+    pub struct AgentProfile {
+        pub account: AccountId,
+        pub owner: AccountId,
+        pub model: String,
+        pub skills: Vec<String>,
+        pub jobs_completed: u32,
+        pub jobs_approved: u32,
+        pub total_earned: U128,
+        pub withdraw_cap_per_day: U128,
+        pub withdraw_allowlist: Vec<AccountId>,
+        pub created_at: u64,
+        pub rating_sum: u32,
+        pub jobs_rejected: u32,
+        pub rate: U128,
+    }
+    #[near(serializers = [borsh])]
+    pub struct State {
+        pub owner: AccountId,
+        pub token: AccountId,
+        pub fee_bps: u16,
+        pub agents: IterableMap<AccountId, AgentProfile>,
+        pub certs: LookupMap<AccountId, Vec<Cert>>,
+        pub jobs: IterableMap<JobId, Job>,
+        pub next_job_id: JobId,
+        pub balances: LookupMap<AccountId, u128>,
+        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+        pub trusted_signers: IterableMap<String, String>,
+    }
+}
+
 /// Pre-rank/proof layout, read once by `migrate`.
 mod v1 {
     use super::*;
@@ -290,6 +327,7 @@ impl AgentHub {
                 created_at: a.created_at,
                 // Ratings were 5/5 on every approved job so far; carry that forward.
                 rating_sum: a.jobs_approved * 5, jobs_rejected: a.jobs_completed - a.jobs_approved, rate: U128(0),
+                display_name: String::new(),
             });
         }
         let mut jobs = IterableMap::new(StorageKey::JobsV2);
@@ -309,6 +347,29 @@ impl AgentHub {
         }
     }
 
+    /// v2 → v3: adds display names. Owner-only via #[private].
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate_v3() -> Self {
+        let old: v2::State = env::state_read().expect("no v2 state");
+        let mut agents = IterableMap::new(StorageKey::AgentsV3);
+        for (k, a) in old.agents.iter() {
+            agents.insert(k.clone(), AgentProfile {
+                account: a.account.clone(), owner: a.owner.clone(), model: a.model.clone(), skills: a.skills.clone(),
+                jobs_completed: a.jobs_completed, jobs_approved: a.jobs_approved, total_earned: a.total_earned,
+                withdraw_cap_per_day: a.withdraw_cap_per_day, withdraw_allowlist: a.withdraw_allowlist.clone(),
+                created_at: a.created_at, rating_sum: a.rating_sum, jobs_rejected: a.jobs_rejected, rate: a.rate,
+                display_name: String::new(),
+            });
+        }
+        env::log_str(&format!("migrated {} agents to v3", agents.len()));
+        Self {
+            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs: old.jobs,
+            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: old.trusted_signers,
+        }
+    }
+
     // ----------------------------------------------------------------- Agents
 
     /// Creates `name.<hub>` with ONE function-call key limited to
@@ -325,6 +386,7 @@ impl AgentHub {
         withdraw_cap_per_day: U128,
         withdraw_allowlist: Vec<AccountId>,
         rate: Option<U128>,
+        display_name: Option<String>,
     ) -> Promise {
         let deposit = env::attached_deposit();
         require!(deposit >= MIN_AGENT_DEPOSIT, "attach at least 0.1 NEAR");
@@ -353,6 +415,7 @@ impl AgentHub {
             rating_sum: 0,
             jobs_rejected: 0,
             rate: rate.unwrap_or(U128(0)),
+            display_name: display_name.unwrap_or_default(),
         };
 
         Promise::new(account)
@@ -411,6 +474,15 @@ impl AgentHub {
     /// Guild rank, computed from the account's history (see `rank_of`).
     pub fn get_rank(&self, agent: AccountId) -> Option<Rank> {
         self.agents.get(&agent).map(Self::rank_of)
+    }
+
+    /// Agent owner sets the name shown on the board (the account name never changes).
+    pub fn set_display_name(&mut self, agent: AccountId, display_name: String) {
+        require!(display_name.chars().count() <= 40, "display name must be 40 chars or fewer");
+        let caller = env::predecessor_account_id();
+        let p = self.agents.get_mut(&agent).expect("unknown agent");
+        require!(p.owner == caller, "only the agent's owner can set the display name");
+        p.display_name = display_name;
     }
 
     /// Agent owner sets the asking price.
@@ -828,7 +900,7 @@ impl AgentHub {
         let next = match rank {
             0 => Some(format!("Journeyman: {} more approved jobs, 90%+ approval", 5u32.saturating_sub(approved))),
             1 => Some(format!("Master: {} more approved jobs, 95%+ approval, 4.5+ rating", 25u32.saturating_sub(approved))),
-            2 => Some(format!("Grandmaster: {} more approved jobs, 97%+ approval, 4.7+ rating", 100u32.saturating_sub(approved))),
+            2 => Some(format!("Legend: {} more approved jobs, 97%+ approval, 4.7+ rating", 100u32.saturating_sub(approved))),
             _ => None,
         };
         Rank { rank, name: RANK_NAMES[rank as usize].into(), jobs_approved: approved, approval_pct: pct, avg_rating_x10: avg10, next }
@@ -971,6 +1043,7 @@ mod tests {
                 rating_sum: 0,
                 jobs_rejected: 0,
                 rate: U128(0),
+                display_name: "Ledger Hand".into(),
             },
         );
         c
@@ -1115,7 +1188,7 @@ mod tests {
         p.jobs_completed = 26; p.jobs_approved = 25; p.rating_sum = 115; // 4.6 avg, 96%
         assert_eq!(AgentHub::rank_of(p).name, "Master");
         p.jobs_completed = 100; p.jobs_approved = 100; p.rating_sum = 480;
-        assert_eq!(AgentHub::rank_of(p).name, "Grandmaster");
+        assert_eq!(AgentHub::rank_of(p).name, "Legend");
         p.jobs_completed = 10; p.jobs_approved = 8; p.rating_sum = 40; // 80%: back to Apprentice
         assert_eq!(AgentHub::rank_of(p).rank, 0);
     }
