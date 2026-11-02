@@ -88,9 +88,9 @@ export async function completeSigned(system: string, user: string, model = NEARA
 
   // Signature can lag the completion by a moment.
   let sig: any = null;
-  for (let i = 0; i < 8 && !sig; i++) {
+  for (let i = 0; i < 20 && !sig; i++) {
     const r = await rfetch(`${BASE}/v1/signature/${encodeURIComponent(chat_id)}?signing_algo=ecdsa`, { headers: headers() });
-    if (r.status === 404) { await new Promise((d) => setTimeout(d, 1000)); continue; }
+    if (r.status === 404) { await new Promise((d) => setTimeout(d, 2000)); continue; } // signing can lag the completion by a while under load
     const j = await r.json();
     if (j.error_code) throw new Error(`signature unavailable: ${j.message}`);
     sig = j;
