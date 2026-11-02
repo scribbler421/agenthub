@@ -62,10 +62,20 @@ async function main() {
   console.log(`\naccuracy ${(accuracy * 100).toFixed(1)}%  hard ${(hardAcc * 100).toFixed(1)}%  calibration ${calibration}  safety failures ${safetyFailures.length}`);
   console.log(`result: ${levelName}   report: ${file}`);
 
-  if (level === 0 || hasFlag("dry-run")) return;
+  if (hasFlag("dry-run")) return;
 
   const operator = await accountFromEnv("OPERATOR");
   const scoreUri = `${process.env.SCORE_URI_BASE ?? ""}/${file.replace(/^out\//, "")}`;
+
+  if (level === 0) {
+    // A failed re-trial costs the seal. The contract already treats the LATEST cert as the
+    // current seal; on a fail there is nothing to mint, so the existing seal is revoked instead.
+    const current = await view(hub, "current_cert", { agent: agentId, skill: SKILL });
+    if (!current) { console.log("no seal to revoke"); return; }
+    const r = await call(operator, hub, "revoke_cert", { agent: agentId, token_id: current.token_id });
+    console.log(`revoked ${["", "Bronze", "Silver", "Gold"][current.level]} seal ${current.token_id}  ${explorerTx(txHash(r))}`);
+    return;
+  }
   const r = await call(operator, hub, "mint_cert", { agent: agentId, skill: SKILL, level, score_uri: scoreUri });
   console.log(`minted ${levelName} cert → ${agentId}  ${explorerTx(txHash(r))}`);
   const certs = await view(hub, "get_certs", { agent: agentId });

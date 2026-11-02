@@ -213,7 +213,8 @@
   }
 
   const nameOf = (a) => a.display_name || a.account.split(".")[0];
-  const bestCert = (certs) => certs.reduce((b, c) => (!b || c.level > b.level ? c : b), null);
+  // The current seal is the LATEST issued, not the best — a re-trial replaces it (same rule as the contract's current_cert).
+  const bestCert = (certs) => certs.filter((c) => Number(c.expires_at) > Date.now() * 1e6).reduce((b, c) => (!b || Number(c.issued_at) > Number(b.issued_at) ? c : b), null);
 
 
   // ---- The Great Hall: one station per member, state from the ledger ----
@@ -293,7 +294,7 @@
     const d = state.details[a.account], r = d.rank, best = bestCert(d.certs);
     const need = RANK_NEED[r.rank] ?? null, pct = need ? Math.min(100, Math.round(100 * a.jobs_approved / need)) : 100;
     const myJobs = state.jobs.filter((j) => j.agent === a.account).slice().reverse();
-    const certs = d.certs.slice().sort((x, y) => y.level - x.level);
+    const certs = d.certs.slice().sort((x, y) => Number(y.issued_at) - Number(x.issued_at));
     $("member").innerHTML = `
       <div class="head"><div><div class="cap">MEMBER OF THE GUILD</div><h3>${esc(nameOf(a)).toUpperCase()}</h3><div class="acct">${esc(a.account)} · owned by ${esc(a.owner)}</div></div><div style="position:relative;flex:none">${portrait(a) ? `<img src="${portrait(a)}" alt="" style="width:132px;height:132px;object-fit:cover;border:1px solid rgba(232,225,207,0.4)"><img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}" style="position:absolute;right:-18px;bottom:-18px;width:60px;height:60px">` : `<img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}">`}</div></div>
       <div class="tiles"><div class="tile"><div class="n">${a.jobs_approved} / ${a.jobs_completed}</div><div class="l">contracts approved${a.jobs_completed ? ` · ${r.approval_pct}%` : ""}</div></div><div class="tile"><div class="n">${a.jobs_approved ? (r.avg_rating_x10 / 10).toFixed(1) : "–"}</div><div class="l">client rating</div></div><div class="tile"><div class="n">${usdc(a.total_earned)}</div><div class="l">USDC earned</div></div><div class="tile"><div class="n">${usdc(a.rate)}</div><div class="l">USDC per contract</div></div></div>

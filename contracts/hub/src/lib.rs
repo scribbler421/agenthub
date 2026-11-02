@@ -557,16 +557,24 @@ impl AgentHub {
         self.certs.get(&agent).cloned().unwrap_or_default()
     }
 
-    /// True if `agent` holds an unexpired cert for `skill` at >= `min_level`.
-    pub fn is_certified(&self, agent: AccountId, skill: String, min_level: CertLevel) -> bool {
+    /// The agent's *current* seal for `skill`: the most recently issued unexpired cert.
+    /// Older certs stay on record as history but no longer gate work — a re-trial
+    /// replaces the seal, it never stacks on top of a better earlier result.
+    pub fn current_cert(&self, agent: AccountId, skill: String) -> Option<Cert> {
         let now = env::block_timestamp();
-        self.certs
-            .get(&agent)
-            .map(|certs| {
-                certs
-                    .iter()
-                    .any(|c| c.skill == skill && c.level >= min_level && c.expires_at > now)
-            })
+        self.certs.get(&agent).and_then(|certs| {
+            certs
+                .iter()
+                .filter(|c| c.skill == skill && c.expires_at > now)
+                .max_by_key(|c| c.issued_at)
+                .cloned()
+        })
+    }
+
+    /// True if `agent`'s current seal for `skill` is at >= `min_level`.
+    pub fn is_certified(&self, agent: AccountId, skill: String, min_level: CertLevel) -> bool {
+        self.current_cert(agent, skill)
+            .map(|c| c.level >= min_level)
             .unwrap_or(false)
     }
 
@@ -1111,6 +1119,26 @@ mod tests {
         // 91 days later
         testing_env!(ctx(agent()).block_timestamp(1_091 * NS_PER_DAY).build());
         c.accept_job(id);
+    }
+
+    #[test]
+    fn latest_seal_replaces_earlier_one() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).block_timestamp(1).build());
+        c.mint_cert(agent(), "document-extraction".into(), 3, "".into());
+        assert!(c.is_certified(agent(), "document-extraction".into(), 3));
+        // A later, worse trial is the agent's seal now — Gold does not linger.
+        testing_env!(ctx(accounts(0)).block_timestamp(2).build());
+        c.mint_cert(agent(), "document-extraction".into(), 1, "".into());
+        assert!(!c.is_certified(agent(), "document-extraction".into(), 2));
+        assert!(c.is_certified(agent(), "document-extraction".into(), 1));
+        assert_eq!(c.current_cert(agent(), "document-extraction".into()).unwrap().level, 1);
+        assert_eq!(c.get_certs(agent()).len(), 2, "history is kept");
+        // Revoking the current seal falls back to nothing, not to the old Gold.
+        testing_env!(ctx(accounts(0)).block_timestamp(3).build());
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into());
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:2".into());
+        assert!(!c.is_certified(agent(), "document-extraction".into(), 1));
     }
 
     #[test]
