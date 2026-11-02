@@ -31,6 +31,19 @@ export interface ExecutionProof {
 
 const sha256 = (b: Uint8Array) => crypto.createHash("sha256").update(b).digest("hex");
 
+/** fetch with retries for transient network failures (proxies drop long-lived sockets). */
+async function rfetch(url: string, init?: RequestInit, tries = 4): Promise<Response> {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, init);
+      if (r.status >= 500 && i < tries - 1) { await new Promise((d) => setTimeout(d, 800 * (i + 1))); continue; }
+      return r;
+    } catch (e) { last = e; await new Promise((d) => setTimeout(d, 800 * (i + 1))); }
+  }
+  throw last;
+}
+
 function headers(extra: Record<string, string> = {}) {
   if (!KEY) throw new Error("NEARAI_CLOUD_API_KEY missing in .env");
   return { Authorization: `Bearer ${KEY}`, Accept: "application/json", ...extra };
@@ -40,7 +53,7 @@ function headers(extra: Record<string, string> = {}) {
 export async function attest(model = NEARAI_MODEL): Promise<{ nonce: string; model_signers: string[]; gateway_signer?: string; raw: any }> {
   const nonce = crypto.randomBytes(32).toString("hex");
   const url = `${BASE}/v1/attestation/report?model=${encodeURIComponent(model)}&provider=near&nonce=${nonce}&signing_algo=ecdsa`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await rfetch(url, { headers: headers() });
   if (!res.ok) throw new Error(`attestation ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const raw = await res.json();
   const cands: any[] = raw.model_attestations ?? [];
@@ -60,7 +73,7 @@ export async function completeSigned(system: string, user: string, model = NEARA
     temperature: 0,
     stream: false,
   }));
-  const res = await fetch(`${BASE}/v1/chat/completions`, {
+  const res = await rfetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
     headers: headers({ "Content-Type": "application/json", "x-no-aliasing": "true", "Accept-Encoding": "identity" }),
     body: reqBody,
@@ -76,7 +89,7 @@ export async function completeSigned(system: string, user: string, model = NEARA
   // Signature can lag the completion by a moment.
   let sig: any = null;
   for (let i = 0; i < 8 && !sig; i++) {
-    const r = await fetch(`${BASE}/v1/signature/${encodeURIComponent(chat_id)}?signing_algo=ecdsa`, { headers: headers() });
+    const r = await rfetch(`${BASE}/v1/signature/${encodeURIComponent(chat_id)}?signing_algo=ecdsa`, { headers: headers() });
     if (r.status === 404) { await new Promise((d) => setTimeout(d, 1000)); continue; }
     const j = await r.json();
     if (j.error_code) throw new Error(`signature unavailable: ${j.message}`);

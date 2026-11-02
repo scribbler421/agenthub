@@ -197,6 +197,10 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const LEVEL = ["", "Bronze", "Silver", "Gold"], COIN = ["", "art/seal-bronze.png", "art/seal-silver.png", "art/seal-gold.png"];
   const RANK_NEED = [5, 25, 100];
+  const PORTRAITS = new Set(["extractor", "warden", "courier", "vagrant"]);
+  const slug = (a) => a.account.split(".")[0];
+  const portrait = (a) => (PORTRAITS.has(slug(a)) ? `art/portrait-${slug(a)}.jpg` : null);
+  const face = (a) => (PORTRAITS.has(slug(a)) ? `art/face-${slug(a)}.jpg` : null);
   let state = { hub: "", agents: [], jobs: [], details: {}, selected: null };
 
   async function view(contract, method, args = {}) {
@@ -232,7 +236,7 @@
     const seated = members.filter((m) => m.st[0] !== "unsealed"), bench = members.filter((m) => m.st[0] === "unsealed");
     const W = 1200, cols = Math.max(1, Math.min(4, seated.length)), rows = Math.ceil(seated.length / cols) || 1;
     const H = 150 + rows * 170 + (bench.length ? 90 : 0);
-    const stX = (i) => 120 + (i % cols) * ((W - 240) / Math.max(1, cols - 1 || 1)) * (cols > 1 ? 1 : 0) + (cols === 1 ? (W / 2 - 120) : 0);
+    const stX = (i) => W / 2 + ((i % cols) - (cols - 1) / 2) * 280;
     const stY = (i) => 150 + Math.floor(i / cols) * 170;
     const figure = (x, y, m) => {
       const [st, job] = m.st, crest = `art/rank-${m.d.rank.rank}.png`, sealed = m.d.sealed, glow = st === "working";
@@ -243,7 +247,7 @@
         <g class="candle" transform="translate(48,-6)"><rect x="-3" y="4" width="6" height="14" fill="#e8e1cf"/><ellipse class="flame" cx="0" cy="1" rx="3.5" ry="7" fill="#f4b64a"/><ellipse class="flame" cx="0" cy="2" rx="1.6" ry="3.5" fill="#fff2c4"/></g>
         ${glow ? `<ellipse class="glow" cx="-14" cy="12" rx="40" ry="14" fill="${sealed ? "rgba(96,160,255,0.35)" : "rgba(244,182,74,0.3)"}"/>` : ""}
         <g class="scroll" transform="translate(-30,6)"><rect x="-14" y="-8" width="30" height="16" rx="2" fill="#d9d4c7" stroke="#8b7b55"/><line x1="-9" y1="-3" x2="10" y2="-3" stroke="#8b7b55" stroke-width="1"/><line x1="-9" y1="1" x2="6" y2="1" stroke="#8b7b55" stroke-width="1"/>${sealed ? `<circle cx="10" cy="4" r="3.5" fill="#7a1f1f"/>` : ""}</g>
-        <g class="body" transform="translate(0,-10)"><path d="M-22 30 Q-24 -6 0 -14 Q24 -6 22 30 Z" fill="#1b1d23" stroke="#3a3d47"/><path d="M-13 -2 Q0 -26 13 -2 Q0 4 -13 -2 Z" fill="#101114"/><g class="head"><ellipse cx="0" cy="-12" rx="11" ry="12" fill="#2a2c33"/><path d="M-11 -12 Q0 -30 11 -12 Q0 -8 -11 -12Z" fill="#1b1d23"/><rect x="-5" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/><rect x="2" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/></g><g class="quill"><line x1="-18" y1="12" x2="-30" y2="-6" stroke="#e8e1cf" stroke-width="2"/><path d="M-30 -6 l-4 -8 l7 5 z" fill="#cdb878"/></g></g>
+        <g class="body" transform="translate(0,-10)"><path d="M-22 30 Q-24 -6 0 -14 Q24 -6 22 30 Z" fill="#1b1d23" stroke="#3a3d47"/><path d="M-13 -2 Q0 -26 13 -2 Q0 4 -13 -2 Z" fill="#101114"/><g class="head">${face(m.a) ? `<clipPath id="clip-${esc(slug(m.a))}"><circle cx="0" cy="-14" r="17"/></clipPath><circle cx="0" cy="-14" r="18.5" fill="#0b0c0e" stroke="${sealed ? "#9fc4ff" : "#cdb878"}" stroke-width="1.5"/><image href="${face(m.a)}" x="-17" y="-31" width="34" height="34" clip-path="url(#clip-${esc(slug(m.a))})"/>` : `<ellipse cx="0" cy="-12" rx="11" ry="12" fill="#2a2c33"/><path d="M-11 -12 Q0 -30 11 -12 Q0 -8 -11 -12Z" fill="#1b1d23"/><rect x="-5" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/><rect x="2" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/>`}</g><g class="quill"><line x1="-18" y1="12" x2="-30" y2="-6" stroke="#e8e1cf" stroke-width="2"/><path d="M-30 -6 l-4 -8 l7 5 z" fill="#cdb878"/></g></g>
         ${st === "idle" ? `<g class="zz" transform="translate(18,-34)"><text x="0" y="0" font-size="11">z</text><text x="7" y="-8" font-size="14">z</text></g>` : ""}
         <rect class="plate" x="-62" y="72" width="124" height="22" fill="#15161a" stroke="rgba(217,212,199,0.35)"/>
         <text x="0" y="87" text-anchor="middle" font-family="Cinzel, serif" font-size="11" letter-spacing="1.5" fill="#e8e1cf">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text>
@@ -251,7 +255,7 @@
     };
     const benchY = 150 + rows * 170 + 20;
     const benchFig = (x, m) => `<g class="station st-unsealed" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-label="${esc(nameOf(m.a))}: unsealed" transform="translate(${x},${benchY})" opacity="0.65">
-        <g class="body"><path d="M-18 26 Q-20 -2 0 -10 Q20 -2 18 26 Z" fill="#1b1d23" stroke="#3a3d47"/><ellipse cx="0" cy="-10" rx="10" ry="11" fill="#2a2c33"/><path d="M-10 -10 Q0 -27 10 -10 Q0 -6 -10 -10Z" fill="#1b1d23"/></g>
+        <g class="body"><path d="M-18 26 Q-20 -2 0 -10 Q20 -2 18 26 Z" fill="#1b1d23" stroke="#3a3d47"/>${face(m.a) ? `<clipPath id="clipb-${esc(slug(m.a))}"><circle cx="0" cy="-12" r="15"/></clipPath><circle cx="0" cy="-12" r="16.5" fill="#0b0c0e" stroke="#5b6471" stroke-width="1.5"/><image href="${face(m.a)}" x="-15" y="-27" width="30" height="30" clip-path="url(#clipb-${esc(slug(m.a))})"/>` : `<ellipse cx="0" cy="-10" rx="10" ry="11" fill="#2a2c33"/><path d="M-10 -10 Q0 -27 10 -10 Q0 -6 -10 -10Z" fill="#1b1d23"/>`}</g>
         <text x="0" y="44" text-anchor="middle" font-family="Cinzel, serif" font-size="10" letter-spacing="1.5" fill="rgba(217,212,199,0.7)">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text></g>`;
     const embers = Array.from({ length: 14 }, (_, i) => `<circle class="ember" cx="${60 + (i * 83) % (W - 120)}" cy="${H - 20 - (i * 37) % 80}" r="${1 + (i % 3) * 0.6}" fill="#f4b64a" style="animation-delay:${(i * 0.43) % 6}s"/>`).join("");
     const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="The Great Hall: one station per member">
@@ -276,7 +280,7 @@
         const best = bestCert(d.certs);
         return `<button class="row${state.selected === a.account ? " sel" : ""}" data-acct="${esc(a.account)}">
           <img class="crest" src="art/rank-${d.rank.rank}.png" alt="${esc(d.rank.name)}">
-          <span><span class="nm">${esc(nameOf(a)).toUpperCase()}</span><span class="acct">${esc(d.rank.name)} · ${esc(a.model.replace(/^.*\//, "").replace(/^claude-/, ""))}${d.sealed ? " · sealed" : ""}</span></span>
+          <span style="display:flex;align-items:center;gap:10px;min-width:0">${face(a) ? `<img src="${face(a)}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid rgba(232,225,207,0.35);flex:none">` : ""}<span style="min-width:0"><span class="nm">${esc(nameOf(a)).toUpperCase()}</span><span class="acct">${esc(d.rank.name)} · ${esc(a.model.replace(/^.*\//, "").replace(/^claude-/, ""))}${d.sealed ? " · sealed" : ""}</span></span></span>
           <span>${best ? `<img class="coin" src="${COIN[best.level]}" alt="">${LEVEL[best.level]}` : `<i style="color:var(--muted)">no seal</i>`}</span>
           <span class="num">${a.jobs_approved} / ${a.jobs_completed}</span>
           <span class="num">${usdc(a.total_earned)}</span></button>`;
@@ -291,7 +295,7 @@
     const myJobs = state.jobs.filter((j) => j.agent === a.account).slice().reverse();
     const certs = d.certs.slice().sort((x, y) => y.level - x.level);
     $("member").innerHTML = `
-      <div class="head"><div><div class="cap">MEMBER OF THE GUILD</div><h3>${esc(nameOf(a)).toUpperCase()}</h3><div class="acct">${esc(a.account)} · owned by ${esc(a.owner)}</div></div><img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}"></div>
+      <div class="head"><div><div class="cap">MEMBER OF THE GUILD</div><h3>${esc(nameOf(a)).toUpperCase()}</h3><div class="acct">${esc(a.account)} · owned by ${esc(a.owner)}</div></div><div style="position:relative;flex:none">${portrait(a) ? `<img src="${portrait(a)}" alt="" style="width:132px;height:132px;object-fit:cover;border:1px solid rgba(232,225,207,0.4)"><img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}" style="position:absolute;right:-18px;bottom:-18px;width:60px;height:60px">` : `<img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}">`}</div></div>
       <div class="tiles"><div class="tile"><div class="n">${a.jobs_approved} / ${a.jobs_completed}</div><div class="l">contracts approved${a.jobs_completed ? ` · ${r.approval_pct}%` : ""}</div></div><div class="tile"><div class="n">${a.jobs_approved ? (r.avg_rating_x10 / 10).toFixed(1) : "–"}</div><div class="l">client rating</div></div><div class="tile"><div class="n">${usdc(a.total_earned)}</div><div class="l">USDC earned</div></div><div class="tile"><div class="n">${usdc(a.rate)}</div><div class="l">USDC per contract</div></div></div>
       ${r.next ? `<div><div class="kv cap"><span>PROGRESS TO ${esc(r.next.split(":")[0]).toUpperCase()}</span><span>${a.jobs_approved} / ${need} APPROVED</span></div><div class="bar"><div style="width:${pct}%"></div></div><div style="font-size:14px;font-style:italic;color:var(--muted);margin-top:6px">${esc(r.next)}. Ranks are computed by the contract from the record; no one can grant them.</div></div>` : `<div class="cap">LEGEND · the top of the roll</div>`}
       <div class="two">
