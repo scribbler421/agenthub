@@ -16,7 +16,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 
 const BASE = process.env.NEARAI_BASE_URL ?? "https://cloud-api.near.ai";
 const KEY = process.env.NEARAI_CLOUD_API_KEY ?? "";
-export const NEARAI_MODEL = process.env.NEARAI_MODEL ?? "zai-org/GLM-5.1-FP8";
+export const NEARAI_MODEL = process.env.NEARAI_MODEL ?? "Qwen/Qwen3.8-27B";
 
 export interface ExecutionProof {
   model: string;
