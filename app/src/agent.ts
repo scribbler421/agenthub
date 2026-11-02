@@ -12,15 +12,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function work(hub: string, agentId: string): Promise<number> {
   const agent = await agentAccount(agentId);
   const open: any[] = await view(hub, "list_jobs", { status: "Open" });
+  // Contracts this agent already accepted but never submitted (crash, restart): resume them first.
+  const mine: any[] = (await view(hub, "list_jobs", { status: "Accepted" })).filter((j: any) => j.agent === agentId);
   let done = 0;
-  for (const job of open) {
+  for (const job of [...mine, ...open]) {
     if (job.skill !== SKILL) continue;
-    const ok = await view(hub, "is_certified", { agent: agentId, skill: SKILL, min_level: job.min_level });
-    if (!ok) { console.log(`job #${job.id}: needs level ${job.min_level}, skipping`); continue; }
-
-    console.log(`job #${job.id}: ${fmtUsdc(job.budget)} — accepting`);
-    const a = await call(agent, hub, "accept_job", { job_id: job.id });
-    console.log(`  accepted  ${explorerTx(txHash(a))}`);
+    if (job.status === "Open") {
+      const ok = await view(hub, "is_certified", { agent: agentId, skill: SKILL, min_level: job.min_level });
+      if (!ok) { console.log(`job #${job.id}: needs level ${job.min_level}, skipping`); continue; }
+      console.log(`job #${job.id}: ${fmtUsdc(job.budget)} — accepting`);
+      const a = await call(agent, hub, "accept_job", { job_id: job.id });
+      console.log(`  accepted  ${explorerTx(txHash(a))}`);
+    } else {
+      console.log(`job #${job.id}: ${fmtUsdc(job.budget)} — resuming`);
+    }
 
     // Resolve the spec. v1: "<path>#sha256=<hash>" in this repo.
     const [specPath, frag] = String(job.spec_uri).split("#");

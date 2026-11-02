@@ -485,6 +485,14 @@ impl AgentHub {
         p.display_name = display_name;
     }
 
+    /// Agent owner updates the model label (informational; shown on the board).
+    pub fn set_model(&mut self, agent: AccountId, model: String) {
+        let caller = env::predecessor_account_id();
+        let p = self.agents.get_mut(&agent).expect("unknown agent");
+        require!(p.owner == caller, "only the agent's owner can set the model");
+        p.model = model;
+    }
+
     /// Agent owner sets the asking price.
     pub fn set_rate(&mut self, agent: AccountId, rate: U128) {
         let caller = env::predecessor_account_id();

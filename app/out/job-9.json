@@ -1,0 +1,83 @@
+{
+  "job_id": 9,
+  "agent": "courier.hub.nexus0.testnet",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "results": [
+    {
+      "id": "inv-a",
+      "fields": {
+        "vendor": {
+          "value": "Saigon Coffee Supply",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-4471",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-10-03",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "VND",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "1285000.00",
+          "confidence": "confident"
+        }
+      }
+    },
+    {
+      "id": "inv-b",
+      "fields": {
+        "vendor": {
+          "value": "PACIFIC OFFICE CO.",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-7810",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-09-21",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": "unsure"
+        },
+        "total": {
+          "value": "216.50",
+          "confidence": "confident"
+        }
+      }
+    },
+    {
+      "id": "inv-c",
+      "fields": {
+        "vendor": {
+          "value": "Lotus Cloud Services",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "PT 2026-1193",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-08-14",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "EUR",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "240.00",
+          "confidence": "unsure"
+        }
+      }
+    }
+  ]
+}

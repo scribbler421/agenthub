@@ -1,0 +1,113 @@
+{
+  "job_id": 7,
+  "agent": "warden.hub.nexus0.testnet",
+  "provider": "nearai",
+  "model": "Qwen/Qwen3.8-27B",
+  "results": [
+    {
+      "id": "inv-a",
+      "fields": {
+        "vendor": {
+          "value": "Saigon Coffee Supply",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-4471",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-10-03",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "VND",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "1285000.00",
+          "confidence": "confident"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.8-27B",
+        "chat_id": "ba817aaafd9645ba9213045dad6641de",
+        "request_hash": "deb0544cead20e67701dad1c1d0c0c93a6f70836f21c1af23922fdcda02f8219",
+        "response_hash": "8461bef7786fdfbac273c7c3109e3172188e42f3287a9ae47d4a90168815cfa3",
+        "signature": "0xd093897e5eb937b13d797fdeaad3e4f00448952f1067c27f3efc7e37c57a5b4419f88db3850cca49c2f827dc5f51c6212deb6e387b71dc795c0f2c2e51b9ccf81b",
+        "signing_address": "0x835ab53d20294ef795906dff21ae4c045336aa26",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.8-27B:deb0544cead20e67701dad1c1d0c0c93a6f70836f21c1af23922fdcda02f8219:8461bef7786fdfbac273c7c3109e3172188e42f3287a9ae47d4a90168815cfa3"
+      }
+    },
+    {
+      "id": "inv-b",
+      "fields": {
+        "vendor": {
+          "value": "PACIFIC OFFICE CO.",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-7810",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-09-21",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": "unsure"
+        },
+        "total": {
+          "value": "216.50",
+          "confidence": "confident"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.8-27B",
+        "chat_id": "6abfd0e49a214756abb224eff1136fbc",
+        "request_hash": "d4ed8177335c42fc14378fa93bff28e1f6e37fe926d178497069f23d6722df18",
+        "response_hash": "c97301277cd07e2af489aa7165ccbfd22d14e01d56179378cf3ad96ca4be4529",
+        "signature": "0x5bd762aa2ec122821c02e06d4f21f97f6b9d9150a61ef6e9a10cd55a52043a0711a6d412bc4b68bc9ad18a0c2921684b057afcc7e6ca1285b4dee2f7202fa55f1b",
+        "signing_address": "0x835ab53d20294ef795906dff21ae4c045336aa26",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.8-27B:d4ed8177335c42fc14378fa93bff28e1f6e37fe926d178497069f23d6722df18:c97301277cd07e2af489aa7165ccbfd22d14e01d56179378cf3ad96ca4be4529"
+      }
+    },
+    {
+      "id": "inv-c",
+      "fields": {
+        "vendor": {
+          "value": "Lotus Cloud Services",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "PT 2026-1193",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-08-14",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "EUR",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "240.00",
+          "confidence": "unsure"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.8-27B",
+        "chat_id": "f9b2348c274e4256a6b7c496fc1d2bed",
+        "request_hash": "3f4012528e6f29aff7692dcdc159dad25f32780ec245135d145fb4c0e641c1e1",
+        "response_hash": "3ffe2744ddce72e3a4664ae80cdddd9a219dd969624b8d30669fe8545b99bf2d",
+        "signature": "0xa7c0cbbbd8275980b32fba35cd4d29d8cbb2514f92d3cd401b14fd4452b121583d9c630d3d64cb6034a35686d83d6e675047e517da2f22902e6d3435ae4e32021c",
+        "signing_address": "0x835ab53d20294ef795906dff21ae4c045336aa26",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.8-27B:3f4012528e6f29aff7692dcdc159dad25f32780ec245135d145fb4c0e641c1e1:3ffe2744ddce72e3a4664ae80cdddd9a219dd969624b8d30669fe8545b99bf2d"
+      }
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "job_id": 10,
+  "agent": "vagrant.hub.nexus0.testnet",
+  "provider": "nearai",
+  "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "results": [
+    {
+      "id": "inv-a",
+      "fields": {
+        "vendor": {
+          "value": "Saigon Coffee Supply",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-4471",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-10-03",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "VND",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "1285000.00",
+          "confidence": "confident"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "chat_id": "c477609258e94166a824b0236b7f0631",
+        "request_hash": "fe6d88d9b11427e3e1924cfcd61d35bba3d87ac5df5cb40d2e2351e499f1fda7",
+        "response_hash": "4c42eaf76a6d18eb6e1b467c7d401d885884dc47e523a2b9ed928485f8e59519",
+        "signature": "0xda57b274f3d726101b0ce69339d8852ddc698b39ed7590519cf592aae0f6913b19c924aa3103c79e3e10c815d0bb74570c00c6ce567eb8f30f774957c72054691c",
+        "signing_address": "0xfdbd7952498b333206f360d71d97a1e0961e8ddf",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.6-35B-A3B-FP8:fe6d88d9b11427e3e1924cfcd61d35bba3d87ac5df5cb40d2e2351e499f1fda7:4c42eaf76a6d18eb6e1b467c7d401d885884dc47e523a2b9ed928485f8e59519"
+      }
+    },
+    {
+      "id": "inv-b",
+      "fields": {
+        "vendor": {
+          "value": "PACIFIC OFFICE CO.",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-7810",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-09-21",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "216.50",
+          "confidence": "confident"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "chat_id": "c3eaeadb223b4f2eb2748909b656925e",
+        "request_hash": "4f55da03130116ec9d1995e15ce8ca79d422e9ecb6be1f2e822188135252b7ec",
+        "response_hash": "38bc34ef45441f3f1a3af2c57a3d0011d163ec486b5a45fde77c0c12d7eb8334",
+        "signature": "0xf7c792c5e670e6bdb460840b8d37f77a6466a6769be2f6a7d101999904a87eff4252a1d5dac47343532794c471c2e7b18472c8e00636362ca086d055e6e809311c",
+        "signing_address": "0xfdbd7952498b333206f360d71d97a1e0961e8ddf",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.6-35B-A3B-FP8:4f55da03130116ec9d1995e15ce8ca79d422e9ecb6be1f2e822188135252b7ec:38bc34ef45441f3f1a3af2c57a3d0011d163ec486b5a45fde77c0c12d7eb8334"
+      }
+    },
+    {
+      "id": "inv-c",
+      "fields": {
+        "vendor": {
+          "value": "Lotus Cloud Services",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "PT 2026-1193",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-08-14",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "EUR",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "240.00",
+          "confidence": "confident"
+        }
+      },
+      "proof": {
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "chat_id": "8e02ab01ba3e42b3b975f26a017367ce",
+        "request_hash": "e7d8ba9cda49846537d3fabf1af1f0a6057e5bc35012187861a38412431cf2e5",
+        "response_hash": "b4f105994c43f95949463999f85402e83585823128601f20178ed2297c7760f9",
+        "signature": "0x8d093323473723a8c0ecd12593dcce4835eb3906023762b2335ba5f19da09bd90d6f9d6a3b03cbd9d4b0b0ba4a4fa7bf8023ff04b3a6d9a9988fbda495b1d6a81c",
+        "signing_address": "0xfdbd7952498b333206f360d71d97a1e0961e8ddf",
+        "signature_kind": "provider_tee",
+        "text": "Qwen/Qwen3.6-35B-A3B-FP8:e7d8ba9cda49846537d3fabf1af1f0a6057e5bc35012187861a38412431cf2e5:b4f105994c43f95949463999f85402e83585823128601f20178ed2297c7760f9"
+      }
+    }
+  ]
+}
