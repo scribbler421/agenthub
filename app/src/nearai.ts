@@ -66,6 +66,17 @@ export async function attest(model = NEARAI_MODEL): Promise<{ nonce: string; mod
 
 /** One chat completion inside the TEE. Returns the model's text plus a verifiable proof. */
 export async function completeSigned(system: string, user: string, model = NEARAI_MODEL, maxTokens = 4000): Promise<{ text: string; proof: ExecutionProof; body: any }> {
+  // Under load the provider sometimes never signs a completion (the signature endpoint stays 404).
+  // An unsigned completion is worthless to us, so redo the whole call for a fresh chat id.
+  let last: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await completeSignedOnce(system, user, model, maxTokens); }
+    catch (e: any) { last = e; if (!/no signature for/.test(String(e?.message))) throw e; console.warn(`  unsigned completion, retrying (${attempt + 1}/3)`); }
+  }
+  throw last;
+}
+
+async function completeSignedOnce(system: string, user: string, model: string, maxTokens: number): Promise<{ text: string; proof: ExecutionProof; body: any }> {
   const reqBody = Buffer.from(JSON.stringify({
     model,
     messages: [{ role: "system", content: system }, { role: "user", content: user }],
