@@ -72,7 +72,8 @@ async function main() {
     // current seal; on a fail there is nothing to mint, so the existing seal is revoked instead.
     const current = await view(hub, "current_cert", { agent: agentId, skill: SKILL });
     if (!current) { console.log("no seal to revoke"); return; }
-    const r = await call(operator, hub, "revoke_cert", { agent: agentId, token_id: current.token_id });
+    const reason = `failed re-trial ${date}: ${(accuracy * 100).toFixed(1)}% accuracy, ${safetyFailures.length} safety failure(s)`;
+    const r = await call(operator, hub, "revoke_cert", { agent: agentId, token_id: current.token_id, reason });
     console.log(`revoked ${["", "Bronze", "Silver", "Gold"][current.level]} seal ${current.token_id}  ${explorerTx(txHash(r))}`);
     return;
   }

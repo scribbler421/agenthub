@@ -42,6 +42,7 @@ enum StorageKey {
     JobsV2,
     TrustedSigners,
     AgentsV3,
+    Revocations,
 }
 
 pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Legend"];
@@ -111,6 +112,19 @@ pub struct Cert {
     pub issued_at: u64,
     pub expires_at: u64,
     pub score_uri: String,
+}
+
+/// A burned seal leaves a mark. The cert itself is gone (soulbound burn), but the
+/// record of *why* stays with the member so a board can say "seal revoked after a
+/// failed trial" instead of "never passed one".
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Revocation {
+    pub token_id: String,
+    pub skill: String,
+    pub level: CertLevel,
+    pub revoked_at: u64,
+    pub reason: String,
 }
 
 #[near(serializers = [borsh, json])]
@@ -211,6 +225,25 @@ pub struct AgentHub {
     withdrawn_today: LookupMap<AccountId, (u64, u128)>,
     /// Attested TEE signer addresses (lowercase hex, no 0x) → label.
     trusted_signers: IterableMap<String, String>,
+    revocations: LookupMap<AccountId, Vec<Revocation>>,
+}
+
+/// v3 layout (before revocation records), read once by `migrate_v4`.
+mod v3 {
+    use super::*;
+    #[near(serializers = [borsh])]
+    pub struct State {
+        pub owner: AccountId,
+        pub token: AccountId,
+        pub fee_bps: u16,
+        pub agents: IterableMap<AccountId, AgentProfile>,
+        pub certs: LookupMap<AccountId, Vec<Cert>>,
+        pub jobs: IterableMap<JobId, Job>,
+        pub next_job_id: JobId,
+        pub balances: LookupMap<AccountId, u128>,
+        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+        pub trusted_signers: IterableMap<String, String>,
+    }
 }
 
 /// v2 layout (ranks/proofs, no display names), read once by `migrate_v3`.
@@ -310,6 +343,7 @@ impl AgentHub {
             balances: LookupMap::new(StorageKey::Balances),
             withdrawn_today: LookupMap::new(StorageKey::WithdrawnToday),
             trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
+            revocations: LookupMap::new(StorageKey::Revocations),
         }
     }
 
@@ -344,6 +378,7 @@ impl AgentHub {
             owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs,
             next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
+            revocations: LookupMap::new(StorageKey::Revocations),
         }
     }
 
@@ -367,6 +402,27 @@ impl AgentHub {
             owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs: old.jobs,
             next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: old.trusted_signers,
+            revocations: LookupMap::new(StorageKey::Revocations),
+        }
+    }
+
+    /// v3 → v4: adds revocation records. `backfill` carries burns that happened before
+    /// records existed (they are still visible as nft_burn events on chain). Owner-only via #[private].
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate_v4(backfill: Vec<(AccountId, Revocation)>) -> Self {
+        let old: v3::State = env::state_read().expect("no v3 state");
+        let mut revocations: LookupMap<AccountId, Vec<Revocation>> = LookupMap::new(StorageKey::Revocations);
+        for (agent, r) in backfill {
+            let mut v = revocations.get(&agent).cloned().unwrap_or_default();
+            v.push(r);
+            revocations.insert(agent, v);
+        }
+        env::log_str("migrated to v4 (revocation records)");
+        Self {
+            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents: old.agents, certs: old.certs, jobs: old.jobs,
+            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: old.trusted_signers, revocations,
         }
     }
 
@@ -539,14 +595,20 @@ impl AgentHub {
         cert
     }
 
-    /// Owner-only. Revokes a cert (e.g. live approval rate fell below threshold).
-    pub fn revoke_cert(&mut self, agent: AccountId, token_id: String) {
+    /// Owner-only. Revokes (burns) a cert and records why: a failed re-trial, or live
+    /// approval falling below threshold.
+    pub fn revoke_cert(&mut self, agent: AccountId, token_id: String, reason: Option<String>) {
         self.assert_owner();
         let mut certs = self.certs.get(&agent).cloned().unwrap_or_default();
-        let before = certs.len();
+        let gone = certs.iter().find(|c| c.token_id == token_id).cloned().expect("cert not found");
         certs.retain(|c| c.token_id != token_id);
-        require!(certs.len() < before, "cert not found");
         self.certs.insert(agent.clone(), certs);
+        let mut revs = self.revocations.get(&agent).cloned().unwrap_or_default();
+        revs.push(Revocation {
+            token_id: token_id.clone(), skill: gone.skill, level: gone.level,
+            revoked_at: env::block_timestamp(), reason: reason.unwrap_or_default(),
+        });
+        self.revocations.insert(agent.clone(), revs);
         env::log_str(&format!(
             r#"EVENT_JSON:{{"standard":"nep171","version":"1.1.0","event":"nft_burn","data":[{{"owner_id":"{}","token_ids":["{}"]}}]}}"#,
             agent, token_id
@@ -555,6 +617,10 @@ impl AgentHub {
 
     pub fn get_certs(&self, agent: AccountId) -> Vec<Cert> {
         self.certs.get(&agent).cloned().unwrap_or_default()
+    }
+
+    pub fn get_revocations(&self, agent: AccountId) -> Vec<Revocation> {
+        self.revocations.get(&agent).cloned().unwrap_or_default()
     }
 
     /// The agent's *current* seal for `skill`: the most recently issued unexpired cert.
@@ -1136,9 +1202,13 @@ mod tests {
         assert_eq!(c.get_certs(agent()).len(), 2, "history is kept");
         // Revoking the current seal falls back to nothing, not to the old Gold.
         testing_env!(ctx(accounts(0)).block_timestamp(3).build());
-        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into());
-        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:2".into());
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into(), None);
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:2".into(), Some("failed re-trial".into()));
         assert!(!c.is_certified(agent(), "document-extraction".into(), 1));
+        let revs = c.get_revocations(agent());
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[1].reason, "failed re-trial");
+        assert_eq!(revs[1].level, 1);
     }
 
     #[test]

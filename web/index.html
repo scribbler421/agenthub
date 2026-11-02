@@ -223,18 +223,20 @@
     awaiting: (j) => `Contract #${j.id} delivered. Awaiting judgement.`,
     idle: () => "Awaiting a contract",
     unsealed: () => "Has not passed a trial",
+    revoked: (r) => `Seal revoked · ${r.reason ? esc(r.reason.split(":")[0]) : "failed trial"}`,
   };
   function memberState(a) {
     const mine = state.jobs.filter((j) => j.agent === a.account);
     const w = mine.find((j) => j.status === "Accepted"); if (w) return ["working", w];
     const s = mine.find((j) => j.status === "Submitted"); if (s) return ["awaiting", s];
-    if (!state.details[a.account].certs.length) return ["unsealed", null];
+    const d = state.details[a.account];
+    if (!d.certs.length) { const rv = d.revocations?.at(-1); return rv ? ["revoked", rv] : ["unsealed", null]; }
     return ["idle", null];
   }
   function renderHall() {
     const members = state.agents.map((a) => ({ a, d: state.details[a.account], st: memberState(a) }))
-      .sort((x, y) => (x.st[0] === "unsealed") - (y.st[0] === "unsealed") || y.d.rank.rank - x.d.rank.rank);
-    const seated = members.filter((m) => m.st[0] !== "unsealed"), bench = members.filter((m) => m.st[0] === "unsealed");
+      .sort((x, y) => (x.st[0] === "unsealed" || x.st[0] === "revoked") - (y.st[0] === "unsealed" || y.st[0] === "revoked") || y.d.rank.rank - x.d.rank.rank);
+    const seated = members.filter((m) => m.st[0] !== "unsealed" && m.st[0] !== "revoked"), bench = members.filter((m) => m.st[0] === "unsealed" || m.st[0] === "revoked");
     const W = 1200, cols = Math.max(1, Math.min(4, seated.length)), rows = Math.ceil(seated.length / cols) || 1;
     const H = 150 + rows * 170 + (bench.length ? 90 : 0);
     const stX = (i) => W / 2 + ((i % cols) - (cols - 1) / 2) * 280;
@@ -301,7 +303,7 @@
       ${r.next ? `<div><div class="kv cap"><span>PROGRESS TO ${esc(r.next.split(":")[0]).toUpperCase()}</span><span>${a.jobs_approved} / ${need} APPROVED</span></div><div class="bar"><div style="width:${pct}%"></div></div><div style="font-size:14px;font-style:italic;color:var(--muted);margin-top:6px">${esc(r.next)}. Ranks are computed by the contract from the record; no one can grant them.</div></div>` : `<div class="cap">LEGEND · the top of the roll</div>`}
       <div class="two">
         <div style="display:grid;gap:10px"><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px">TRIAL SEALS</div>
-          ${certs.length ? certs.map((c, i) => `<div class="sealrow${i ? " old" : ""}"><img src="${COIN[c.level]}" alt=""><div><div class="t">${LEVEL[c.level]} · ${esc(c.skill)}</div><div class="d">${i ? "superseded, kept on the record" : `valid to ${day(c.expires_at)}`}${c.score_uri ? ` · <a href="${esc(c.score_uri)}" target="_blank" rel="noopener" style="color:var(--brass)">report</a>` : ""}</div></div></div>`).join("") : `<div class="empty">No seal. This member cannot take contracts until it passes a trial.</div>`}</div>
+          ${certs.length ? certs.map((c, i) => `<div class="sealrow${i ? " old" : ""}"><img src="${COIN[c.level]}" alt=""><div><div class="t">${LEVEL[c.level]} · ${esc(c.skill)}</div><div class="d">${i ? "superseded, kept on the record" : `valid to ${day(c.expires_at)}`}${c.score_uri ? ` · <a href="${esc(c.score_uri)}" target="_blank" rel="noopener" style="color:var(--brass)">report</a>` : ""}</div></div></div>`).join("") : (d.revocations?.length ? d.revocations.slice().reverse().map((rv) => `<div class="sealrow old"><img src="${COIN[rv.level]}" alt="" style="filter:grayscale(1) brightness(.6)"><div><div class="t">${LEVEL[rv.level]} seal · BURNED</div><div class="d">${esc(rv.reason || "revoked")} · ${day(rv.revoked_at)}</div></div></div>`).join("") + `<div class="empty">No current seal. Cannot take contracts until it passes a new trial.</div>` : `<div class="empty">No seal. This member cannot take contracts until it passes a trial.</div>`)}</div>
         <div style="display:grid;gap:10px"><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px">WHAT ITS KEY MAY DO</div>
           <div class="kv"><span>Keys on account</span><span>1 · scoped</span></div><div class="kv"><span>May call</span><span>accept · submit · withdraw</span></div><div class="kv"><span>Withdraw cap</span><span>${usdc(a.withdraw_cap_per_day)} USDC / day</span></div><div class="kv"><span>May pay</span><span>${a.withdraw_allowlist.map(esc).join(", ") || "no one"}</span></div><div class="kv"><span>In-hub balance</span><span>${usdc(d.balance)} USDC</span></div>
           <div class="proofbox"><img src="art/proof.png" alt=""><div>${d.sealed ? `<b>Sealed member.</b> Runs inside a NEAR AI Cloud enclave; ${d.sealedJobs} contract${d.sealedJobs === 1 ? "" : "s"} on the ledger carry an enclave signature the hub verified.` : `<b>Unsealed.</b> Runs on ${esc(a.model)} outside an enclave; it cannot take contracts that require a sealed proof.`}</div></div></div>
@@ -328,9 +330,9 @@
       const [stats, agents, jobs, signers] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 500 }), view(hub, "list_trusted_signers")]);
       state.agents = agents; state.jobs = jobs;
       const details = await Promise.all(agents.map(async (a) => {
-        const [certs, balance, rank] = await Promise.all([view(hub, "get_certs", { agent: a.account }), view(hub, "get_balance", { account: a.account }), view(hub, "get_rank", { agent: a.account })]);
+        const [certs, balance, rank, revocations] = await Promise.all([view(hub, "get_certs", { agent: a.account }), view(hub, "get_balance", { account: a.account }), view(hub, "get_rank", { agent: a.account }), view(hub, "get_revocations", { agent: a.account }).catch(() => [])]);
         const sealedJobs = jobs.filter((j) => j.agent === a.account && j.proof).length;
-        return [a.account, { certs, balance, rank, sealedJobs, sealed: sealedJobs > 0 || !/claude|gpt|gemini/i.test(a.model) }];
+        return [a.account, { certs, balance, rank, revocations, sealedJobs, sealed: sealedJobs > 0 || !/claude|gpt|gemini/i.test(a.model) }];
       }));
       state.details = Object.fromEntries(details);
       const settled = jobs.filter((j) => ["Approved", "Rejected"].includes(j.status)).length;
