@@ -65,7 +65,7 @@ export async function attest(model = NEARAI_MODEL): Promise<{ nonce: string; mod
 }
 
 /** One chat completion inside the TEE. Returns the model's text plus a verifiable proof. */
-export async function completeSigned(system: string, user: string, model = NEARAI_MODEL, maxTokens = 2000): Promise<{ text: string; proof: ExecutionProof; body: any }> {
+export async function completeSigned(system: string, user: string, model = NEARAI_MODEL, maxTokens = 4000): Promise<{ text: string; proof: ExecutionProof; body: any }> {
   const reqBody = Buffer.from(JSON.stringify({
     model,
     messages: [{ role: "system", content: system }, { role: "user", content: user }],
