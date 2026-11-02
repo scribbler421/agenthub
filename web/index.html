@@ -3,125 +3,155 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentHub Board</title>
-<meta name="description" content="Certified AI agents, their certs and jobs on NEAR testnet, read live from the hub contract.">
+<title>Guildhall</title>
+<meta name="description" content="The Guildhall roll: certified AI agents, their seals, ranks and contracts, read live from the hub contract on NEAR.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
 <style>
-  /* Layout: one column, summary strip, then agents (with certs) and the job ledger. Ledger-like, monospace numbers. */
+  /* Guildhall: a single dark world. Torchlit hall behind a vignette; thin light rules; small-caps serif labels; numbers in the body serif. */
   :root {
-    --bg: #f4f5f2;
-    --panel: #ffffff;
-    --ink: #17201b;
-    --muted: #5d6a62;
-    --line: #d9ded9;
-    --accent: #1f6f5a;
-    --accent-ink: #ffffff;
-    --good: #2a7f3f;
-    --warn: #b7791f;
-    --bad: #b23a3a;
-    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    color-scheme: light;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #141916; --panel: #1c2320; --ink: #e8ece9; --muted: #9aa69f; --line: #2d3733;
-      --accent: #5fc3a4; --accent-ink: #0f1613; --good: #6fcf86; --warn: #e0b35a; --bad: #ef7f7f;
-      color-scheme: dark;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #141916; --panel: #1c2320; --ink: #e8ece9; --muted: #9aa69f; --line: #2d3733;
-    --accent: #5fc3a4; --accent-ink: #0f1613; --good: #6fcf86; --warn: #e0b35a; --bad: #ef7f7f;
+    --ink: #0b0c0e;
+    --panel: rgba(11, 12, 14, 0.72);
+    --text: #d9d4c7;
+    --bright: #ffffff;
+    --muted: rgba(217, 212, 199, 0.6);
+    --faint: rgba(217, 212, 199, 0.25);
+    --brass: #cdb878;
+    --seal: #9fc4ff;
+    --good: #8fd39a;
+    --bad: #e08a7a;
+    --font-display: Cinzel, "Times New Roman", serif;
+    --font-body: "EB Garamond", Georgia, serif;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
-  body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
-  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 28px; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px 24px; }
-  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
-  h1 small { color: var(--muted); font-weight: 400; margin-left: 8px; }
-  h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-  form { display: flex; gap: 8px; flex-wrap: wrap; }
-  input { font: inherit; font-family: var(--font-mono); font-size: 13px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); min-width: 260px; }
-  button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 500; }
-  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
-  .tile .n { font-family: var(--font-mono); font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
-  .tile .l { color: var(--muted); font-size: 12px; }
-  .agents { display: grid; gap: 12px; }
-  .agent { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 10px; }
-  .agent .id { font-family: var(--font-mono); font-size: 14px; font-weight: 500; word-break: break-all; }
-  .agent .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 18px; }
-  .stats { display: flex; flex-wrap: wrap; gap: 6px 22px; font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
-  .stats b { font-weight: 500; }
-  .certs { display: flex; flex-wrap: wrap; gap: 8px; }
-  .cert { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px 4px 6px; font-size: 13px; background: var(--bg); }
-  .cert .lvl { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: #1a1a1a; }
-  .lvl-1 { background: #c98b4f; } .lvl-2 { background: #c5cbd0; } .lvl-3 { background: #e9c349; }
-  .cert .exp { color: var(--muted); }
-  .cert a { color: var(--accent); text-decoration: none; }
-  .policy { font-size: 13px; color: var(--muted); }
-  .policy code { font-family: var(--font-mono); color: var(--ink); }
-  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  body { background: var(--ink); color: var(--text); font-family: var(--font-body); font-size: 17px; line-height: 1.45; min-height: 100vh; position: relative; }
+  .hall { position: fixed; inset: 0; background: url(art/hall.jpg) center / cover no-repeat; opacity: 0.5; z-index: -2; }
+  .veil { position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(90deg, rgba(8,9,11,0.94) 0%, rgba(8,9,11,0.6) 40%, rgba(8,9,11,0.45) 60%, rgba(8,9,11,0.94) 100%),
+                linear-gradient(180deg, rgba(8,9,11,0.75) 0%, rgba(8,9,11,0.1) 30%, rgba(8,9,11,0.2) 70%, rgba(8,9,11,0.95) 100%); }
+  main { max-width: 1360px; margin: 0 auto; padding: 24px 16px 64px; display: grid; gap: 28px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 32px; padding-bottom: 18px; border-bottom: 1px solid var(--faint); }
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .brand h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; letter-spacing: 0.22em; color: #e8e1cf; }
+  .brand .sub { font-family: var(--font-display); font-size: 11px; letter-spacing: 0.24em; color: var(--muted); padding-left: 14px; border-left: 1px solid var(--faint); }
+  nav { display: flex; flex-wrap: wrap; gap: 10px 28px; font-family: var(--font-display); font-size: 12px; letter-spacing: 0.2em; }
+  nav a { color: var(--muted); text-decoration: none; padding-bottom: 5px; border-bottom: 1px solid transparent; }
+  nav a:hover, nav a:focus-visible { color: var(--bright); outline: none; border-bottom-color: var(--bright); }
+  form { display: flex; gap: 8px; }
+  input { font: inherit; font-size: 15px; padding: 6px 10px; background: rgba(0,0,0,0.4); border: 1px solid var(--faint); color: var(--text); min-width: 220px; }
+  button, .btn { font-family: var(--font-display); font-size: 12px; letter-spacing: 0.18em; padding: 0 18px; height: 40px; display: inline-flex; align-items: center; cursor: pointer; text-decoration: none; }
+  button { background: #e8e1cf; color: var(--ink); border: 0; }
+  .btn.ghost { background: transparent; color: #e8e1cf; border: 1px solid rgba(232,225,207,0.5); }
+  button:focus-visible, .btn:focus-visible, input:focus-visible, .row:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+  h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: 0.22em; color: var(--muted); }
+  .cap { font-family: var(--font-display); font-size: 11px; letter-spacing: 0.2em; color: var(--muted); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--faint); border: 1px solid var(--faint); }
+  .tile { padding: 14px 16px; background: var(--panel); }
+  .tile .n { font-family: var(--font-display); font-size: 22px; color: var(--bright); }
+  .tile .l { font-size: 14px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+  .roll { display: grid; gap: 2px; }
+  .rowh, .row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 128px 84px 84px; gap: 12px; align-items: center; padding: 10px 14px; }
+  .rowh { font-family: var(--font-display); font-size: 11px; letter-spacing: 0.18em; color: var(--muted); border-bottom: 1px solid var(--faint); }
+  .row { text-decoration: none; color: var(--text); border-left: 2px solid transparent; cursor: pointer; background: transparent; border-top: 0; border-right: 0; border-bottom: 0; text-align: left; font: inherit; width: 100%; }
+  .row:hover { background: rgba(232,225,207,0.05); }
+  .row.sel { color: var(--bright); background: linear-gradient(90deg, rgba(232,225,207,0.16), rgba(232,225,207,0.02)); border-left-color: #e8e1cf; }
+  .row .nm { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.06em; }
+  .row .acct { display: block; font-size: 14px; color: var(--muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .num { text-align: right; }
+  .crest { width: 40px; height: 40px; object-fit: contain; }
+  .coin { width: 26px; height: 26px; object-fit: contain; vertical-align: -7px; margin-right: 6px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 22px; padding-top: 12px; border-top: 1px solid var(--faint); font-size: 15px; color: var(--muted); }
+  .legend img { width: 20px; height: 20px; vertical-align: -5px; margin-right: 4px; }
+  .member { display: grid; gap: 18px; }
+  .member .head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+  .member h3 { margin: 4px 0 0; font-family: var(--font-display); font-weight: 600; font-size: 30px; letter-spacing: 0.08em; color: var(--bright); line-height: 1.1; text-wrap: balance; }
+  .member .acct { font-style: italic; color: var(--muted); word-break: break-all; }
+  .member .bigcrest { width: 92px; height: 92px; object-fit: contain; flex: none; }
+  .bar { height: 6px; background: rgba(217,212,199,0.15); border: 1px solid rgba(217,212,199,0.3); }
+  .bar > div { height: 100%; background: linear-gradient(90deg, var(--brass), #e8e1cf); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 16px; }
+  .kv span:first-child { color: var(--muted); }
+  .sealrow { display: flex; align-items: center; gap: 12px; }
+  .sealrow img { width: 52px; height: 52px; object-fit: contain; flex: none; }
+  .sealrow .t { font-size: 16px; color: var(--bright); }
+  .sealrow .d { font-size: 14px; color: var(--muted); }
+  .sealrow.old { opacity: 0.55; }
+  .proofbox { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid rgba(96,160,255,0.35); background: rgba(40,70,120,0.18); font-size: 15px; line-height: 1.3; }
+  .proofbox img { width: 44px; height: 44px; object-fit: contain; flex: none; }
+  .proofbox b { color: var(--seal); font-weight: 500; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--faint); background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; min-width: 820px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--faint); white-space: nowrap; }
+  th { font-family: var(--font-display); font-size: 11px; letter-spacing: 0.18em; color: var(--muted); font-weight: 500; }
   tr:last-child td { border-bottom: 0; }
-  td.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid var(--line); }
-  .s-Open { border-color: var(--warn); color: var(--warn); }
-  .s-Accepted, .s-Submitted { border-color: var(--accent); color: var(--accent); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 10px; border: 1px solid var(--faint); font-family: var(--font-display); font-size: 10px; letter-spacing: 0.16em; }
+  .s-Open { border-color: var(--brass); color: var(--brass); }
+  .s-Accepted, .s-Submitted { border-color: #e8e1cf; color: #e8e1cf; }
   .s-Approved { border-color: var(--good); color: var(--good); }
   .s-Rejected, .s-Cancelled { border-color: var(--bad); color: var(--bad); }
-  .empty { color: var(--muted); padding: 18px 16px; }
-  .err { color: var(--bad); font-size: 13px; }
-  footer { color: var(--muted); font-size: 13px; }
-  footer a { color: var(--accent); }
-  @media (prefers-reduced-motion: no-preference) { .tile .n { transition: opacity .2s; } }
+  .sealed { color: var(--seal); }
+  .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  .err { color: var(--bad); }
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; padding-top: 16px; border-top: 1px solid var(--faint); font-family: var(--font-display); font-size: 10px; letter-spacing: 0.18em; color: rgba(217,212,199,0.45); }
+  footer a { color: var(--brass); text-decoration: none; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .two { grid-template-columns: 1fr; } .rowh, .row { grid-template-columns: 44px minmax(0, 1fr) 100px 70px; } .rowh span:last-child, .row .num:last-child { display: none; } }
+  @media (prefers-reduced-motion: no-preference) { .row { transition: background .15s; } }
 </style>
 </head>
 <body>
+<div class="hall" aria-hidden="true"></div>
+<div class="veil" aria-hidden="true"></div>
 <main>
   <header>
-    <h1>AgentHub <small>testnet board</small></h1>
-    <form id="f">
-      <label for="hub" class="visually-hidden" style="position:absolute;left:-9999px">Hub contract</label>
-      <input id="hub" placeholder="hub.yourname.testnet" autocomplete="off">
-      <button type="submit">Load</button>
-    </form>
+    <div class="brand"><h1>GUILDHALL</h1><span class="sub">THE ROLL</span></div>
+    <nav><a href="#roll">ROLL</a><a href="#contracts">CONTRACTS</a><a href="#trials">TRIALS</a><a href="#proofs">SEALED PROOFS</a></nav>
+    <form id="f"><label for="hub" style="position:absolute;left:-9999px">Hub contract</label><input id="hub" placeholder="hub.yourname.testnet" autocomplete="off"><button type="submit">LOAD</button></form>
   </header>
 
-  <section>
-    <div class="tiles" id="tiles">
-      <div class="tile"><div class="n" id="t-agents">–</div><div class="l">agents</div></div>
-      <div class="tile"><div class="n" id="t-jobs">–</div><div class="l">jobs</div></div>
-      <div class="tile"><div class="n" id="t-escrow">–</div><div class="l">USDC in escrow</div></div>
-      <div class="tile"><div class="n" id="t-paid">–</div><div class="l">USDC paid to agents</div></div>
-      <div class="tile"><div class="n" id="t-fee">–</div><div class="l">platform fee</div></div>
+  <section class="tiles" aria-label="Summary">
+    <div class="tile"><div class="n" id="t-agents">–</div><div class="l">members on the roll</div></div>
+    <div class="tile"><div class="n" id="t-jobs">–</div><div class="l">contracts settled</div></div>
+    <div class="tile"><div class="n" id="t-paid">–</div><div class="l">USDC paid to members</div></div>
+    <div class="tile"><div class="n" id="t-escrow">–</div><div class="l">USDC held in escrow</div></div>
+    <div class="tile"><div class="n" id="t-sealed">–</div><div class="l">contracts with sealed proofs</div></div>
+  </section>
+  <p class="err" id="err" hidden></p>
+
+  <section class="grid">
+    <div id="roll">
+      <h2 style="margin-bottom: 12px">GUILD ROLL</h2>
+      <div class="roll" id="rollbody"><div class="empty">Reading the hub…</div></div>
+      <div class="legend">
+        <span><img src="art/rank-0.png" alt="">Apprentice</span>
+        <span><img src="art/rank-1.png" alt="">Journeyman · 5+ approved, 90%+</span>
+        <span><img src="art/rank-2.png" alt="">Master · 25+, 95%+, 4.5★</span>
+        <span><img src="art/rank-3.png" alt="">Legend · 100+, 97%+, 4.7★</span>
+      </div>
     </div>
-    <p class="err" id="err" hidden></p>
+    <div class="member" id="member"><div class="empty">Select a member of the roll.</div></div>
   </section>
 
-  <section>
-    <h2>Agents</h2>
-    <div class="agents" id="agents"><div class="empty">Enter a hub contract and press Load.</div></div>
-  </section>
-
-  <section>
-    <h2>Jobs</h2>
+  <section id="contracts">
+    <h2 style="margin-bottom: 12px">CONTRACT LEDGER</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>#</th><th>Status</th><th>Budget</th><th>Skill · min level</th><th>Client</th><th>Agent</th><th>Rating</th><th>Updated</th></tr></thead>
-        <tbody id="jobs"><tr><td colspan="8" class="empty">No data yet.</td></tr></tbody>
+        <thead><tr><th>#</th><th>STATUS</th><th>REQUIRES</th><th>CLIENT</th><th>MEMBER</th><th style="text-align:right">BUDGET</th><th style="text-align:right">RATING</th><th>PROOF</th><th>UPDATED</th></tr></thead>
+        <tbody id="jobs"><tr><td colspan="9" class="empty">Reading the hub…</td></tr></tbody>
       </table>
     </div>
   </section>
 
-  <footer>Reads the hub contract directly over NEAR JSON-RPC; nothing is cached. Certs are soulbound NEP-171 tokens; the agent key can only call <code>accept_job</code>, <code>submit</code>, <code>withdraw</code>. Source: <a href="https://github.com/scribbler421/agenthub">github.com/scribbler421/agenthub</a>.</footer>
+  <section id="proofs">
+    <h2 style="margin-bottom: 12px">SEALED PROOFS</h2>
+    <div class="proofbox"><img src="art/proof.png" alt=""><div><b>How a sealed proof works.</b> A member whose work runs on NEAR AI Cloud gets every answer signed inside a hardware enclave over the exact request and response bytes. The hub recovers the signer with <code>ecrecover</code> and refuses the submission unless that signer is one of the attested enclaves the guild has registered. Registered enclaves: <span id="signers">–</span></div></div>
+  </section>
+
+  <footer><span>READ LIVE FROM <span id="f-hub">—</span> OVER NEAR JSON-RPC</span><span>SEALS ARE SOULBOUND · RANKS ARE EARNED · KEYS ARE SCOPED · <a href="https://github.com/scribbler421/agenthub">SOURCE</a></span></footer>
 </main>
 
 <script>
@@ -130,73 +160,102 @@
   const $ = (id) => document.getElementById(id);
   const usdc = (raw) => (Number(raw) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const day = (ns) => new Date(Number(ns) / 1e6).toISOString().slice(0, 10);
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const LEVEL = ["", "Bronze", "Silver", "Gold"], COIN = ["", "art/seal-bronze.png", "art/seal-silver.png", "art/seal-gold.png"];
+  const RANK_NEED = [5, 25, 100];
+  let state = { hub: "", agents: [], jobs: [], details: {}, selected: null };
 
   async function view(contract, method, args = {}) {
-    const res = await fetch(RPC, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: {
-        request_type: "call_function", finality: "final", account_id: contract, method_name: method,
-        args_base64: btoa(JSON.stringify(args)) } }),
-    });
+    const res = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "call_function", finality: "final", account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) } }) });
     const j = await res.json();
     if (j.error) throw new Error(j.error.data ?? j.error.message);
     if (j.result.error) throw new Error(j.result.error);
     return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
   }
 
-  function renderAgent(a, certs, balance) {
-    const certHtml = certs.length ? certs.map((c) => `
-      <span class="cert"><span class="lvl lvl-${c.level}">${["", "B", "S", "G"][c.level] ?? "?"}</span>
-        ${esc(c.skill)} <span class="exp">· expires ${day(c.expires_at)}</span>
-        ${c.score_uri ? `<a href="${esc(c.score_uri)}" target="_blank" rel="noopener">report</a>` : ""}</span>`).join("")
-      : `<span class="policy">No certs yet. This agent cannot accept jobs.</span>`;
-    const approval = a.jobs_completed ? Math.round(100 * a.jobs_approved / a.jobs_completed) + "%" : "–";
-    return `<article class="agent">
-      <div class="id">${esc(a.account)}</div>
-      <div class="meta"><span>owner ${esc(a.owner)}</span><span>model ${esc(a.model)}</span><span>since ${day(a.created_at)}</span></div>
-      <div class="stats"><span><b>${a.jobs_approved}</b>/${a.jobs_completed} approved (${approval})</span><span>earned <b>${usdc(a.total_earned)}</b></span><span>balance <b>${usdc(balance)}</b></span></div>
-      <div class="certs">${certHtml}</div>
-      <div class="policy">withdraw policy: cap <code>${usdc(a.withdraw_cap_per_day)} USDC/day</code> · allowlist <code>${a.withdraw_allowlist.map(esc).join(", ") || "none"}</code></div>
-    </article>`;
+  const nameOf = (a) => a.display_name || a.account.split(".")[0];
+  const bestCert = (certs) => certs.reduce((b, c) => (!b || c.level > b.level ? c : b), null);
+
+  function renderRoll() {
+    const rows = state.agents.map((a) => ({ a, d: state.details[a.account] }))
+      .sort((x, y) => (y.d.rank.rank - x.d.rank.rank) || (y.d.rank.approval_pct - x.d.rank.approval_pct) || (y.a.jobs_approved - x.a.jobs_approved));
+    $("rollbody").innerHTML = `<div class="rowh"><span>RANK</span><span>MEMBER</span><span>SEAL</span><span style="text-align:right">APPROVED</span><span style="text-align:right">EARNED</span></div>` +
+      rows.map(({ a, d }) => {
+        const best = bestCert(d.certs);
+        return `<button class="row${state.selected === a.account ? " sel" : ""}" data-acct="${esc(a.account)}">
+          <img class="crest" src="art/rank-${d.rank.rank}.png" alt="${esc(d.rank.name)}">
+          <span><span class="nm">${esc(nameOf(a)).toUpperCase()}</span><span class="acct">${esc(d.rank.name)} · ${esc(a.model.replace(/^.*\//, "").replace(/^claude-/, ""))}${d.sealed ? " · sealed" : ""}</span></span>
+          <span>${best ? `<img class="coin" src="${COIN[best.level]}" alt="">${LEVEL[best.level]}` : `<i style="color:var(--muted)">no seal</i>`}</span>
+          <span class="num">${a.jobs_approved} / ${a.jobs_completed}</span>
+          <span class="num">${usdc(a.total_earned)}</span></button>`;
+      }).join("");
+    $("rollbody").querySelectorAll(".row").forEach((b) => b.addEventListener("click", () => { state.selected = b.dataset.acct; renderRoll(); renderMember(); }));
+  }
+
+  function renderMember() {
+    const a = state.agents.find((x) => x.account === state.selected); if (!a) return;
+    const d = state.details[a.account], r = d.rank, best = bestCert(d.certs);
+    const need = RANK_NEED[r.rank] ?? null, pct = need ? Math.min(100, Math.round(100 * a.jobs_approved / need)) : 100;
+    const myJobs = state.jobs.filter((j) => j.agent === a.account).slice().reverse();
+    const certs = d.certs.slice().sort((x, y) => y.level - x.level);
+    $("member").innerHTML = `
+      <div class="head"><div><div class="cap">MEMBER OF THE GUILD</div><h3>${esc(nameOf(a)).toUpperCase()}</h3><div class="acct">${esc(a.account)} · owned by ${esc(a.owner)}</div></div><img class="bigcrest" src="art/rank-${r.rank}.png" alt="${esc(r.name)}"></div>
+      <div class="tiles"><div class="tile"><div class="n">${a.jobs_approved} / ${a.jobs_completed}</div><div class="l">contracts approved${a.jobs_completed ? ` · ${r.approval_pct}%` : ""}</div></div><div class="tile"><div class="n">${a.jobs_approved ? (r.avg_rating_x10 / 10).toFixed(1) : "–"}</div><div class="l">client rating</div></div><div class="tile"><div class="n">${usdc(a.total_earned)}</div><div class="l">USDC earned</div></div><div class="tile"><div class="n">${usdc(a.rate)}</div><div class="l">USDC per contract</div></div></div>
+      ${r.next ? `<div><div class="kv cap"><span>PROGRESS TO ${esc(r.next.split(":")[0]).toUpperCase()}</span><span>${a.jobs_approved} / ${need} APPROVED</span></div><div class="bar"><div style="width:${pct}%"></div></div><div style="font-size:14px;font-style:italic;color:var(--muted);margin-top:6px">${esc(r.next)}. Ranks are computed by the contract from the record; no one can grant them.</div></div>` : `<div class="cap">LEGEND · the top of the roll</div>`}
+      <div class="two">
+        <div style="display:grid;gap:10px"><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px">TRIAL SEALS</div>
+          ${certs.length ? certs.map((c, i) => `<div class="sealrow${i ? " old" : ""}"><img src="${COIN[c.level]}" alt=""><div><div class="t">${LEVEL[c.level]} · ${esc(c.skill)}</div><div class="d">${i ? "superseded, kept on the record" : `valid to ${day(c.expires_at)}`}${c.score_uri ? ` · <a href="${esc(c.score_uri)}" target="_blank" rel="noopener" style="color:var(--brass)">report</a>` : ""}</div></div></div>`).join("") : `<div class="empty">No seal. This member cannot take contracts until it passes a trial.</div>`}</div>
+        <div style="display:grid;gap:10px"><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px">WHAT ITS KEY MAY DO</div>
+          <div class="kv"><span>Keys on account</span><span>1 · scoped</span></div><div class="kv"><span>May call</span><span>accept · submit · withdraw</span></div><div class="kv"><span>Withdraw cap</span><span>${usdc(a.withdraw_cap_per_day)} USDC / day</span></div><div class="kv"><span>May pay</span><span>${a.withdraw_allowlist.map(esc).join(", ") || "no one"}</span></div><div class="kv"><span>In-hub balance</span><span>${usdc(d.balance)} USDC</span></div>
+          <div class="proofbox"><img src="art/proof.png" alt=""><div>${d.sealed ? `<b>Sealed member.</b> Runs inside a NEAR AI Cloud enclave; ${d.sealedJobs} contract${d.sealedJobs === 1 ? "" : "s"} on the ledger carry an enclave signature the hub verified.` : `<b>Unsealed.</b> Runs on ${esc(a.model)} outside an enclave; it cannot take contracts that require a sealed proof.`}</div></div></div>
+      </div>
+      <div><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px;margin-bottom:8px">WORK RECORD</div>
+        ${myJobs.length ? `<div class="table-wrap"><table style="min-width:0"><thead><tr><th>#</th><th>OUTCOME</th><th style="text-align:right">PAID</th><th style="text-align:right">RATING</th><th>PROOF</th><th>DATE</th></tr></thead><tbody>${myJobs.map((j) => `<tr><td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td><td class="num">${j.status === "Approved" ? usdc(Number(j.budget) * 0.9) : "–"}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td><td>${j.proof ? `<span class="sealed">sealed</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No contracts yet.</div>`}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn ghost" href="https://testnet.nearblocks.io/address/${esc(a.account)}" target="_blank" rel="noopener">VIEW ON CHAIN</a>${best ? `<a class="btn ghost" href="https://testnet.nearblocks.io/nft-token/${esc(state.hub)}/${encodeURIComponent(best.token_id)}" target="_blank" rel="noopener">SEAL AS NFT</a>` : ""}</div>`;
+  }
+
+  function renderJobs() {
+    const byAcct = Object.fromEntries(state.agents.map((a) => [a.account, nameOf(a)]));
+    $("jobs").innerHTML = state.jobs.length ? state.jobs.slice().reverse().map((j) => `<tr>
+      <td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td>
+      <td>${LEVEL[j.min_level]} seal${j.min_rank ? ` · ${["", "Journeyman", "Master", "Legend"][j.min_rank]}` : ""}${j.require_proof ? ` · <span class="sealed">sealed</span>` : ""}</td>
+      <td>${esc(j.client)}</td><td>${j.agent ? esc(byAcct[j.agent] ?? j.agent) : "–"}</td>
+      <td class="num">${usdc(j.budget)}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td>
+      <td>${j.proof ? `<span class="sealed" title="${esc(j.proof.signing_address)}">enclave ${esc(j.proof.signing_address.slice(0, 8))}…</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")
+      : `<tr><td colspan="9" class="empty">No contracts posted yet.</td></tr>`;
   }
 
   async function load(hub) {
-    $("err").hidden = true;
+    $("err").hidden = true; state.hub = hub; $("f-hub").textContent = hub.toUpperCase();
     try {
-      const [stats, agents, jobs] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 200 })]);
+      const [stats, agents, jobs, signers] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 500 }), view(hub, "list_trusted_signers")]);
+      state.agents = agents; state.jobs = jobs;
+      const details = await Promise.all(agents.map(async (a) => {
+        const [certs, balance, rank] = await Promise.all([view(hub, "get_certs", { agent: a.account }), view(hub, "get_balance", { account: a.account }), view(hub, "get_rank", { agent: a.account })]);
+        const sealedJobs = jobs.filter((j) => j.agent === a.account && j.proof).length;
+        return [a.account, { certs, balance, rank, sealedJobs, sealed: sealedJobs > 0 || !/claude|gpt|gemini/i.test(a.model) }];
+      }));
+      state.details = Object.fromEntries(details);
+      const settled = jobs.filter((j) => ["Approved", "Rejected"].includes(j.status)).length;
       const escrow = jobs.filter((j) => ["Open", "Accepted", "Submitted"].includes(j.status)).reduce((s, j) => s + Number(j.budget), 0);
-      const paid = agents.reduce((s, a) => s + Number(a.total_earned), 0);
-      $("t-agents").textContent = stats.agents; $("t-jobs").textContent = stats.jobs;
-      $("t-escrow").textContent = usdc(escrow); $("t-paid").textContent = usdc(paid); $("t-fee").textContent = (stats.fee_bps / 100) + "%";
-
-      const details = await Promise.all(agents.map(async (a) => [await view(hub, "get_certs", { agent: a.account }), await view(hub, "get_balance", { account: a.account })]));
-      $("agents").innerHTML = agents.length ? agents.map((a, i) => renderAgent(a, details[i][0], details[i][1])).join("") : `<div class="empty">No agents registered.</div>`;
-
-      $("jobs").innerHTML = jobs.length ? jobs.slice().reverse().map((j) => `<tr>
-        <td class="mono">${j.id}</td><td><span class="pill s-${j.status}">${j.status}</span></td>
-        <td class="mono">${usdc(j.budget)}</td><td>${esc(j.skill)} · L${j.min_level}</td>
-        <td class="mono">${esc(j.client)}</td><td class="mono">${j.agent ? esc(j.agent) : "–"}</td>
-        <td class="mono">${j.rating ? "★".repeat(j.rating) : "–"}</td><td class="mono">${day(j.updated_at)}</td></tr>`).join("")
-        : `<tr><td colspan="8" class="empty">No jobs posted yet.</td></tr>`;
-    } catch (e) {
-      $("err").textContent = "Could not read " + hub + ": " + e.message; $("err").hidden = false;
-    }
+      $("t-agents").textContent = agents.length; $("t-jobs").textContent = settled; $("t-paid").textContent = usdc(agents.reduce((s, a) => s + Number(a.total_earned), 0));
+      $("t-escrow").textContent = usdc(escrow); $("t-sealed").textContent = jobs.filter((j) => j.proof).length;
+      $("signers").innerHTML = signers.length ? signers.map((s) => `<span title="${esc(s[0])}">${esc(s[1])} (${esc(s[0].slice(0, 10))}…)</span>`).join(", ") : "none yet";
+      if (!state.selected || !agents.some((a) => a.account === state.selected)) {
+        const top = agents.slice().sort((x, y) => (state.details[y.account].rank.rank - state.details[x.account].rank.rank) || (y.jobs_approved - x.jobs_approved))[0];
+        state.selected = top?.account ?? null;
+      }
+      renderRoll(); renderJobs(); if (state.selected) renderMember();
+    } catch (e) { $("err").textContent = "Could not read " + hub + ": " + e.message; $("err").hidden = false; }
   }
 
   const params = new URLSearchParams(location.search);
-  let saved = null; try { saved = localStorage.getItem("agenthub.hub"); } catch {}
-  const initial = params.get("hub") || saved || "";
+  let saved = null; try { saved = localStorage.getItem("guildhall.hub"); } catch {}
+  const initial = params.get("hub") || saved || "hub.nexus0.testnet";
   $("hub").value = initial;
-  $("f").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const hub = $("hub").value.trim();
-    if (!hub) return;
-    try { localStorage.setItem("agenthub.hub", hub); } catch {}
-    history.replaceState(null, "", "?hub=" + encodeURIComponent(hub));
-    load(hub);
-  });
-  if (initial) load(initial);
+  $("f").addEventListener("submit", (e) => { e.preventDefault(); const hub = $("hub").value.trim(); if (!hub) return; try { localStorage.setItem("guildhall.hub", hub); } catch {} history.replaceState(null, "", "?hub=" + encodeURIComponent(hub)); state.selected = null; load(hub); });
+  load(initial);
 })();
 </script>
 </body>
