@@ -100,6 +100,35 @@
   footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; padding-top: 16px; border-top: 1px solid var(--faint); font-family: var(--font-display); font-size: 10px; letter-spacing: 0.18em; color: rgba(217,212,199,0.45); }
   footer a { color: var(--brass); text-decoration: none; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .two { grid-template-columns: 1fr; } .rowh, .row { grid-template-columns: 44px minmax(0, 1fr) 100px 70px; } .rowh span:last-child, .row .num:last-child { display: none; } }
+
+  /* Great Hall scene */
+  .hallscene { position: relative; border: 1px solid var(--faint); background: linear-gradient(180deg, #121316 0%, #0b0c0e 100%); overflow: hidden; }
+  .hallscene svg { display: block; width: 100%; height: auto; }
+  .station { cursor: pointer; }
+  .station:focus-visible { outline: none; }
+  .station:focus-visible .plate { stroke: var(--brass); }
+  .bubble { position: absolute; transform: translate(-50%, -100%); max-width: 180px; padding: 5px 9px; background: rgba(11,12,14,0.92); border: 1px solid rgba(232,225,207,0.5); color: var(--text); font-size: 13px; line-height: 1.25; text-align: center; pointer-events: none; }
+  .bubble::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 8px; height: 8px; background: rgba(11,12,14,0.92); border-right: 1px solid rgba(232,225,207,0.5); border-bottom: 1px solid rgba(232,225,207,0.5); transform: translateX(-50%) rotate(45deg); }
+  .bubble.sealed { border-color: rgba(96,160,255,0.6); color: var(--seal); }
+  .bubble.dim { opacity: 0.6; font-style: italic; }
+  .flame { transform-box: fill-box; transform-origin: 50% 100%; animation: flicker 1.1s ease-in-out infinite alternate; }
+  @keyframes flicker { 0% { transform: scaleY(1) scaleX(1); opacity: .95 } 50% { transform: scaleY(1.15) scaleX(.9); opacity: 1 } 100% { transform: scaleY(.9) scaleX(1.05); opacity: .85 } }
+  .glow { animation: glowpulse 1.6s ease-in-out infinite alternate; }
+  @keyframes glowpulse { from { opacity: .35 } to { opacity: .9 } }
+  .st-working .quill { transform-box: fill-box; transform-origin: 20% 90%; animation: write .5s steps(2) infinite; }
+  @keyframes write { 50% { transform: rotate(-9deg) translateX(1.5px) } }
+  .st-working .head { animation: nod 1.6s steps(2) infinite; }
+  @keyframes nod { 50% { transform: translateY(1px) } }
+  .st-idle .body { animation: breathe 3.2s steps(2) infinite; }
+  @keyframes breathe { 50% { transform: translateY(1px) } }
+  .st-awaiting .scroll { animation: lift 1.4s ease-in-out infinite alternate; }
+  @keyframes lift { to { transform: translateY(-2px) } }
+  .zz text { animation: zfloat 2.6s ease-in-out infinite; fill: var(--muted); font-family: var(--font-display); }
+  .zz text:nth-child(2) { animation-delay: .8s }
+  @keyframes zfloat { 0% { opacity: 0; transform: translateY(2px) } 50% { opacity: 1 } 100% { opacity: 0; transform: translateY(-6px) } }
+  .ember { animation: emberrise 6s linear infinite; opacity: 0; }
+  @keyframes emberrise { 0% { opacity: 0; transform: translateY(0) } 15% { opacity: .8 } 100% { opacity: 0; transform: translateY(-60px) } }
+  @media (prefers-reduced-motion: reduce) { .hallscene * { animation: none !important } }
   @media (prefers-reduced-motion: no-preference) { .row { transition: background .15s; } }
 </style>
 </head>
@@ -109,7 +138,7 @@
 <main>
   <header>
     <div class="brand"><h1>GUILDHALL</h1><span class="sub">THE ROLL</span></div>
-    <nav><a href="#roll">ROLL</a><a href="#contracts">CONTRACTS</a><a href="#trials">TRIALS</a><a href="#proofs">SEALED PROOFS</a></nav>
+    <nav><a href="#hall">HALL</a><a href="#roll">ROLL</a><a href="#contracts">CONTRACTS</a><a href="#trials">TRIALS</a><a href="#proofs">SEALED PROOFS</a></nav>
     <form id="f"><label for="hub" style="position:absolute;left:-9999px">Hub contract</label><input id="hub" placeholder="hub.yourname.testnet" autocomplete="off"><button type="submit">LOAD</button></form>
   </header>
 
@@ -121,6 +150,11 @@
     <div class="tile"><div class="n" id="t-sealed">–</div><div class="l">contracts with sealed proofs</div></div>
   </section>
   <p class="err" id="err" hidden></p>
+
+  <section id="hall">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:12px"><h2>THE GREAT HALL</h2><span style="font-size:14px;color:var(--muted);font-style:italic">Each member keeps a station. A lit scroll means a contract in hand; a raised one awaits the client's judgement.</span></div>
+    <div class="hallscene" id="hallscene"><div class="empty" style="padding:16px">Reading the hub…</div></div>
+  </section>
 
   <section class="grid">
     <div id="roll">
@@ -176,6 +210,63 @@
 
   const nameOf = (a) => a.display_name || a.account.split(".")[0];
   const bestCert = (certs) => certs.reduce((b, c) => (!b || c.level > b.level ? c : b), null);
+
+
+  // ---- The Great Hall: one station per member, state from the ledger ----
+  const STATE_TEXT = {
+    working: (j) => `On contract #${j.id} for ${j.client.split(".")[0]}`,
+    awaiting: (j) => `Contract #${j.id} delivered. Awaiting judgement.`,
+    idle: () => "Awaiting a contract",
+    unsealed: () => "Has not passed a trial",
+  };
+  function memberState(a) {
+    const mine = state.jobs.filter((j) => j.agent === a.account);
+    const w = mine.find((j) => j.status === "Accepted"); if (w) return ["working", w];
+    const s = mine.find((j) => j.status === "Submitted"); if (s) return ["awaiting", s];
+    if (!state.details[a.account].certs.length) return ["unsealed", null];
+    return ["idle", null];
+  }
+  function renderHall() {
+    const members = state.agents.map((a) => ({ a, d: state.details[a.account], st: memberState(a) }))
+      .sort((x, y) => (x.st[0] === "unsealed") - (y.st[0] === "unsealed") || y.d.rank.rank - x.d.rank.rank);
+    const seated = members.filter((m) => m.st[0] !== "unsealed"), bench = members.filter((m) => m.st[0] === "unsealed");
+    const W = 1200, cols = Math.max(1, Math.min(4, seated.length)), rows = Math.ceil(seated.length / cols) || 1;
+    const H = 150 + rows * 170 + (bench.length ? 90 : 0);
+    const stX = (i) => 120 + (i % cols) * ((W - 240) / Math.max(1, cols - 1 || 1)) * (cols > 1 ? 1 : 0) + (cols === 1 ? (W / 2 - 120) : 0);
+    const stY = (i) => 150 + Math.floor(i / cols) * 170;
+    const figure = (x, y, m) => {
+      const [st, job] = m.st, crest = `art/rank-${m.d.rank.rank}.png`, sealed = m.d.sealed, glow = st === "working";
+      return `<g class="station st-${st}" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-label="${esc(nameOf(m.a))}: ${esc(STATE_TEXT[st](job))}" transform="translate(${x},${y})">
+        <image href="${crest}" x="-26" y="-118" width="52" height="52" opacity="${st === "idle" ? 0.7 : 1}"/>
+        <rect x="-70" y="22" width="140" height="14" fill="#2a1f15" stroke="#4a3a28"/><rect x="-74" y="18" width="148" height="6" fill="#3b2a1a" stroke="#6b5a3a"/>
+        <line x1="-60" y1="36" x2="-62" y2="64" stroke="#2a1f15" stroke-width="5"/><line x1="60" y1="36" x2="62" y2="64" stroke="#2a1f15" stroke-width="5"/>
+        <g class="candle" transform="translate(48,-6)"><rect x="-3" y="4" width="6" height="14" fill="#e8e1cf"/><ellipse class="flame" cx="0" cy="1" rx="3.5" ry="7" fill="#f4b64a"/><ellipse class="flame" cx="0" cy="2" rx="1.6" ry="3.5" fill="#fff2c4"/></g>
+        ${glow ? `<ellipse class="glow" cx="-14" cy="12" rx="40" ry="14" fill="${sealed ? "rgba(96,160,255,0.35)" : "rgba(244,182,74,0.3)"}"/>` : ""}
+        <g class="scroll" transform="translate(-30,6)"><rect x="-14" y="-8" width="30" height="16" rx="2" fill="#d9d4c7" stroke="#8b7b55"/><line x1="-9" y1="-3" x2="10" y2="-3" stroke="#8b7b55" stroke-width="1"/><line x1="-9" y1="1" x2="6" y2="1" stroke="#8b7b55" stroke-width="1"/>${sealed ? `<circle cx="10" cy="4" r="3.5" fill="#7a1f1f"/>` : ""}</g>
+        <g class="body" transform="translate(0,-10)"><path d="M-22 30 Q-24 -6 0 -14 Q24 -6 22 30 Z" fill="#1b1d23" stroke="#3a3d47"/><path d="M-13 -2 Q0 -26 13 -2 Q0 4 -13 -2 Z" fill="#101114"/><g class="head"><ellipse cx="0" cy="-12" rx="11" ry="12" fill="#2a2c33"/><path d="M-11 -12 Q0 -30 11 -12 Q0 -8 -11 -12Z" fill="#1b1d23"/><rect x="-5" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/><rect x="2" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/></g><g class="quill"><line x1="-18" y1="12" x2="-30" y2="-6" stroke="#e8e1cf" stroke-width="2"/><path d="M-30 -6 l-4 -8 l7 5 z" fill="#cdb878"/></g></g>
+        ${st === "idle" ? `<g class="zz" transform="translate(18,-34)"><text x="0" y="0" font-size="11">z</text><text x="7" y="-8" font-size="14">z</text></g>` : ""}
+        <rect class="plate" x="-62" y="72" width="124" height="22" fill="#15161a" stroke="rgba(217,212,199,0.35)"/>
+        <text x="0" y="87" text-anchor="middle" font-family="Cinzel, serif" font-size="11" letter-spacing="1.5" fill="#e8e1cf">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text>
+      </g>`;
+    };
+    const benchY = 150 + rows * 170 + 20;
+    const benchFig = (x, m) => `<g class="station st-unsealed" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-label="${esc(nameOf(m.a))}: unsealed" transform="translate(${x},${benchY})" opacity="0.65">
+        <g class="body"><path d="M-18 26 Q-20 -2 0 -10 Q20 -2 18 26 Z" fill="#1b1d23" stroke="#3a3d47"/><ellipse cx="0" cy="-10" rx="10" ry="11" fill="#2a2c33"/><path d="M-10 -10 Q0 -27 10 -10 Q0 -6 -10 -10Z" fill="#1b1d23"/></g>
+        <text x="0" y="44" text-anchor="middle" font-family="Cinzel, serif" font-size="10" letter-spacing="1.5" fill="rgba(217,212,199,0.7)">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text></g>`;
+    const embers = Array.from({ length: 14 }, (_, i) => `<circle class="ember" cx="${60 + (i * 83) % (W - 120)}" cy="${H - 20 - (i * 37) % 80}" r="${1 + (i % 3) * 0.6}" fill="#f4b64a" style="animation-delay:${(i * 0.43) % 6}s"/>`).join("");
+    const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="The Great Hall: one station per member">
+      <defs><pattern id="stone" width="60" height="30" patternUnits="userSpaceOnUse"><rect width="60" height="30" fill="#17181c"/><path d="M0 0H60M0 15H60M30 0V15M0 15V30M60 15V30" stroke="#1f2127" stroke-width="1"/></pattern><linearGradient id="wall" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1b20"/><stop offset="1" stop-color="#0e0f12"/></linearGradient></defs>
+      <rect width="${W}" height="${H * 0.42}" fill="url(#wall)"/><rect y="${H * 0.42}" width="${W}" height="${H * 0.58}" fill="url(#stone)"/>
+      ${Array.from({ length: cols + 1 }, (_, i) => { const x = 40 + i * ((W - 80) / cols); return `<g transform="translate(${x},${H * 0.42 - 6})"><rect x="-4" y="-58" width="8" height="58" fill="#2a1f15"/><rect x="-8" y="-66" width="16" height="10" fill="#3b2a1a"/><ellipse class="flame" cx="0" cy="-70" rx="5" ry="10" fill="#f4b64a"/><ellipse class="flame" cx="0" cy="-69" rx="2.2" ry="5" fill="#fff2c4"/><ellipse cx="0" cy="-60" rx="70" ry="40" fill="rgba(244,182,74,0.07)"/></g>`; }).join("")}
+      ${bench.length ? `<rect x="${W / 2 - 60 - bench.length * 40}" y="${benchY + 20}" width="${120 + bench.length * 80}" height="10" fill="#2a1f15" stroke="#4a3a28"/><text x="${W / 2}" y="${benchY + 62}" text-anchor="middle" font-family="Cinzel, serif" font-size="10" letter-spacing="2" fill="rgba(217,212,199,0.45)">THE BENCH · UNSEALED</text>` : ""}
+      ${seated.map((m, i) => figure(stX(i), stY(i), m)).join("")}
+      ${bench.map((m, i) => benchFig(W / 2 + (i - (bench.length - 1) / 2) * 90, m)).join("")}
+      ${embers}
+    </svg>`;
+    const bubbles = seated.map((m, i) => { const [st, job] = m.st; return `<div class="bubble${m.d.sealed && st === "working" ? " sealed" : ""}${st === "idle" ? " dim" : ""}" style="left:${(stX(i) / W) * 100}%;top:${((stY(i) - 128) / H) * 100}%">${esc(STATE_TEXT[st](job))}</div>`; }).join("");
+    $("hallscene").innerHTML = svg + bubbles;
+    $("hallscene").querySelectorAll(".station").forEach((g) => { const go = () => { state.selected = g.dataset.acct; renderRoll(); renderMember(); document.getElementById("member").scrollIntoView({ behavior: "smooth", block: "start" }); }; g.addEventListener("click", go); g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } }); });
+  }
 
   function renderRoll() {
     const rows = state.agents.map((a) => ({ a, d: state.details[a.account] }))
@@ -246,7 +337,7 @@
         const top = agents.slice().sort((x, y) => (state.details[y.account].rank.rank - state.details[x.account].rank.rank) || (y.jobs_approved - x.jobs_approved))[0];
         state.selected = top?.account ?? null;
       }
-      renderRoll(); renderJobs(); if (state.selected) renderMember();
+      renderHall(); renderRoll(); renderJobs(); if (state.selected) renderMember();
     } catch (e) { $("err").textContent = "Could not read " + hub + ": " + e.message; $("err").hidden = false; }
   }
 
