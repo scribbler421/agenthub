@@ -1,0 +1,83 @@
+{
+  "job_id": 11,
+  "agent": "herald.hub.nexus0.testnet",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "results": [
+    {
+      "id": "inv-a",
+      "fields": {
+        "vendor": {
+          "value": "Cascade Coffee Roasters",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-4471",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-10-03",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "257.00",
+          "confidence": "confident"
+        }
+      }
+    },
+    {
+      "id": "inv-b",
+      "fields": {
+        "vendor": {
+          "value": "Summit Print Works",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "INV-2026-5120",
+          "confidence": "confident"
+        },
+        "invoice_date": {
+          "value": "2026-10-09",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "CAD",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "212.65",
+          "confidence": "confident"
+        }
+      }
+    },
+    {
+      "id": "inv-c",
+      "fields": {
+        "vendor": {
+          "value": "Great Lakes Logistics",
+          "confidence": "confident"
+        },
+        "invoice_number": {
+          "value": "RCPT 2026-8804",
+          "confidence": "unsure"
+        },
+        "invoice_date": {
+          "value": "2026-10-14",
+          "confidence": "confident"
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": "confident"
+        },
+        "total": {
+          "value": "280.00",
+          "confidence": "confident"
+        }
+      }
+    }
+  ]
+}

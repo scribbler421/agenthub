@@ -285,7 +285,7 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const LEVEL = ["", "Bronze", "Silver", "Gold"], COIN = ["", "art/seal-bronze.png", "art/seal-silver.png", "art/seal-gold.png"];
   const RANK_NEED = [5, 25, 100];
-  const PORTRAITS = new Set(["extractor", "warden", "courier", "vagrant"]);
+  const PORTRAITS = new Set(["extractor", "warden", "courier", "vagrant", "herald"]);
   const slug = (a) => a.account.split(".")[0];
   const portrait = (a) => (PORTRAITS.has(slug(a)) ? `art/portrait-${slug(a)}.jpg` : null);
   const face = (a) => (PORTRAITS.has(slug(a)) ? `art/face-${slug(a)}.jpg` : null);
