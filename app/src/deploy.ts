@@ -1,7 +1,7 @@
 // Deploys mock USDC and the hub as sub-accounts of the operator, initialises
 // both, and registers the hub on the token for storage.
 //   npm run deploy                 (uses ../out/*.wasm from CI or `cargo near build`)
-//   npm run deploy -- --fee-bps 1000 --redeploy
+//   npm run deploy -- --fee-bps 600 --redeploy
 import fs from "node:fs";
 import path from "node:path";
 import { KeyPair, type Account } from "near-api-js";
@@ -46,7 +46,7 @@ async function deployOne(operator: Account, sub: string, wasmFile: string, initA
 
 async function main() {
   const operator = await accountFromEnv("OPERATOR");
-  const feeBps = Number(arg("fee-bps", "1000"));
+  const feeBps = Number(arg("fee-bps", "600"));
 
   const token = await deployOne(operator, "usdc", "mock_usdc.wasm", {}, 2n * NEAR + NEAR / 2n);
   const hub = await deployOne(operator, "hub", "agenthub.wasm", { owner: operator.accountId, token, fee_bps: feeBps }, 5n * NEAR);

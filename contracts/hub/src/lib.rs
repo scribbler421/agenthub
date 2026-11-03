@@ -960,6 +960,15 @@ impl AgentHub {
         U128(self.balances.get(&account).copied().unwrap_or(0))
     }
 
+    /// Owner-only. Changes the guild's cut of every settled contract. Applies to
+    /// contracts settled after the change; escrowed budgets are not touched.
+    pub fn set_fee_bps(&mut self, fee_bps: u16) {
+        self.assert_owner();
+        require!(fee_bps <= 5_000, "fee too high");
+        env::log_str(&format!("fee {} -> {} bps", self.fee_bps, fee_bps));
+        self.fee_bps = fee_bps;
+    }
+
     pub fn get_stats(&self) -> Stats {
         Stats {
             agents: self.agents.len() as u64,
@@ -1209,6 +1218,22 @@ mod tests {
         assert_eq!(revs.len(), 2);
         assert_eq!(revs[1].reason, "failed re-trial");
         assert_eq!(revs[1].level, 1);
+    }
+
+    #[test]
+    fn owner_can_change_fee() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.set_fee_bps(600);
+        assert_eq!(c.get_stats().fee_bps, 600);
+    }
+
+    #[test]
+    #[should_panic(expected = "fee too high")]
+    fn fee_is_capped() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.set_fee_bps(5_001);
     }
 
     #[test]

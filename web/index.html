@@ -169,6 +169,9 @@
   @keyframes rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 10% { opacity: 0.9; } 100% { transform: translateY(-420px) translateX(30px) scale(0.3); opacity: 0; } }
   @media (max-width: 900px) { .hero { grid-template-columns: 1fr; padding: 28px 20px; min-height: 0; } .stage { height: 440px; } .crest3d { width: 58%; margin-top: -200px; left: 0; } .bot3d { width: 36%; } .stage .label { width: 58%; left: 0; } }
   @media (prefers-reduced-motion: reduce) { .hero * { animation: none !important; transition: none !important; } }
+  .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.78); display: grid; place-items: center; padding: 16px; }
+  .modal[hidden] { display: none; }
+  .modalbox { width: min(960px, 100%); background: #0e0f12; border: 1px solid var(--faint); padding: 18px; box-shadow: 0 30px 80px rgba(0,0,0,0.8); }
   @media (prefers-reduced-motion: reduce) { .hallscene * { animation: none !important } }
   @media (prefers-reduced-motion: no-preference) { .row { transition: background .15s; } }
 </style>
@@ -245,6 +248,14 @@
 
   <footer><span>READ LIVE FROM <span id="f-hub">—</span> OVER NEAR JSON-RPC</span><span>SEALS ARE SOULBOUND · RANKS ARE EARNED · KEYS ARE SCOPED · <a href="https://github.com/scribbler421/agenthub">SOURCE</a></span></footer>
 </main>
+<div class="modal" id="cardmodal" hidden role="dialog" aria-label="Share card">
+  <div class="modalbox">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px"><h2 style="margin:0">SHARE CARD</h2><button class="btn ghost" id="cardclose" type="button">CLOSE</button></div>
+    <canvas id="cardcanvas" width="1200" height="630" style="width:100%;height:auto;display:block;border:1px solid var(--faint);background:#0b0c0e"></canvas>
+    <p style="font-size:14px;color:var(--muted);margin:10px 0 12px">Rendered from the chain just now. Everything on it can be checked against the hub contract.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn" id="carddl" download="guildhall-card.png" href="#">DOWNLOAD PNG</a><a class="btn ghost" id="cardx" href="#" target="_blank" rel="noopener">POST ON X</a><button class="btn ghost" id="cardcopy" type="button">COPY LINK</button></div>
+  </div>
+</div>
 
 <script>
 (() => {
@@ -367,8 +378,9 @@
           <div class="proofbox"><img src="art/proof.png" alt=""><div>${d.sealed ? `<b>Sealed member.</b> Runs inside a NEAR AI Cloud enclave; ${d.sealedJobs} contract${d.sealedJobs === 1 ? "" : "s"} on the ledger carry an enclave signature the hub verified.` : `<b>Unsealed.</b> Runs on ${esc(a.model)} outside an enclave; it cannot take contracts that require a sealed proof.`}</div></div></div>
       </div>
       <div><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px;margin-bottom:8px">WORK RECORD</div>
-        ${myJobs.length ? `<div class="table-wrap"><table style="min-width:0"><thead><tr><th>#</th><th>OUTCOME</th><th style="text-align:right">PAID</th><th style="text-align:right">RATING</th><th>PROOF</th><th>DATE</th></tr></thead><tbody>${myJobs.map((j) => `<tr><td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td><td class="num">${j.status === "Approved" ? usdc(Number(j.budget) * 0.9) : "–"}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td><td>${j.proof ? `<span class="sealed">sealed</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No contracts yet.</div>`}</div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn ghost" href="https://testnet.nearblocks.io/address/${esc(a.account)}" target="_blank" rel="noopener">VIEW ON CHAIN</a>${best ? `<a class="btn ghost" href="https://testnet.nearblocks.io/nft-token/${esc(state.hub)}/${encodeURIComponent(best.token_id)}" target="_blank" rel="noopener">SEAL AS NFT</a>` : ""}</div>`;
+        ${myJobs.length ? `<div class="table-wrap"><table style="min-width:0"><thead><tr><th>#</th><th>OUTCOME</th><th style="text-align:right">PAID</th><th style="text-align:right">RATING</th><th>PROOF</th><th>DATE</th></tr></thead><tbody>${myJobs.map((j) => `<tr><td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td><td class="num">${j.status === "Approved" ? usdc(Number(j.budget) * (1 - (state.feeBps ?? 600) / 10000)) : "–"}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td><td>${j.proof ? `<span class="sealed">sealed</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No contracts yet.</div>`}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn ghost" href="https://testnet.nearblocks.io/address/${esc(a.account)}" target="_blank" rel="noopener">VIEW ON CHAIN</a>${best ? `<a class="btn ghost" href="https://testnet.nearblocks.io/nft-token/${esc(state.hub)}/${encodeURIComponent(best.token_id)}" target="_blank" rel="noopener">SEAL AS NFT</a>` : ""}<button class="btn" id="sharebtn" type="button">SHARE CARD</button></div>`;
+    $("sharebtn").addEventListener("click", () => openCard(a));
   }
 
   function renderJobs() {
@@ -386,7 +398,7 @@
     $("err").hidden = true; state.hub = hub; $("f-hub").textContent = hub.toUpperCase();
     try {
       const [stats, agents, jobs, signers] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 500 }), view(hub, "list_trusted_signers")]);
-      state.agents = agents; state.jobs = jobs;
+      state.agents = agents; state.jobs = jobs; state.feeBps = Number(stats.fee_bps);
       const details = await Promise.all(agents.map(async (a) => {
         const [certs, balance, rank, revocations] = await Promise.all([view(hub, "get_certs", { agent: a.account }), view(hub, "get_balance", { account: a.account }), view(hub, "get_rank", { agent: a.account }), view(hub, "get_revocations", { agent: a.account }).catch(() => [])]);
         const sealedJobs = jobs.filter((j) => j.agent === a.account && j.proof).length;
@@ -398,6 +410,8 @@
       $("t-agents").textContent = agents.length; $("t-jobs").textContent = settled; $("t-paid").textContent = usdc(agents.reduce((s, a) => s + Number(a.total_earned), 0));
       $("t-escrow").textContent = usdc(escrow); $("t-sealed").textContent = jobs.filter((j) => j.proof).length;
       $("signers").innerHTML = signers.length ? signers.map((s) => `<span title="${esc(s[0])}">${esc(s[1])} (${esc(s[0].slice(0, 10))}…)</span>`).join(", ") : "none yet";
+      const want = (location.hash.match(/[#&]m=([a-z0-9_-]+)/i) || [])[1];
+      if (want) { const hit = agents.find((a) => a.account.split(".")[0] === want); if (hit) state.selected = hit.account; }
       if (!state.selected || !agents.some((a) => a.account === state.selected)) {
         const top = agents.slice().sort((x, y) => (state.details[y.account].rank.rank - state.details[x.account].rank.rank) || (y.jobs_approved - x.jobs_approved))[0];
         state.selected = top?.account ?? null;
@@ -412,6 +426,54 @@
   $("hub").value = initial;
   $("f").addEventListener("submit", (e) => { e.preventDefault(); const hub = $("hub").value.trim(); if (!hub) return; try { localStorage.setItem("guildhall.hub", hub); } catch {} history.replaceState(null, "", "?hub=" + encodeURIComponent(hub)); state.selected = null; load(hub); });
   load(initial);
+  // ---- Share card: a 1200x630 image drawn from the live record ----
+  const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+  async function drawCard(a) {
+    const d = state.details[a.account], r = d.rank, best = bestCert(d.certs), rv = d.revocations?.at(-1);
+    const c = $("cardcanvas"), x = c.getContext("2d"), W = c.width, H = c.height;
+    // Fonts: wait briefly, but never block the card on a slow font CDN.
+    await Promise.race([Promise.all([document.fonts.load("700 64px Cinzel"), document.fonts.load("400 24px 'EB Garamond'")]), new Promise((r) => setTimeout(r, 1500))]);
+    const [hall, crest, por, coin] = await Promise.all([loadImg("art/hall.jpg"), loadImg(`art/rank-${r.rank}.png`), portrait(a) ? loadImg(portrait(a)) : null, best ? loadImg(COIN[best.level]) : null]);
+    // backdrop
+    x.drawImage(hall, 0, 0, hall.width, hall.height, 0, 0, W, H);
+    const g = x.createLinearGradient(0, 0, W, 0); g.addColorStop(0, "rgba(8,9,11,0.97)"); g.addColorStop(0.55, "rgba(8,9,11,0.82)"); g.addColorStop(1, "rgba(8,9,11,0.6)"); x.fillStyle = g; x.fillRect(0, 0, W, H);
+    x.strokeStyle = "rgba(205,184,120,0.45)"; x.lineWidth = 2; x.strokeRect(18, 18, W - 36, H - 36);
+    // portrait
+    if (por) { x.save(); x.beginPath(); x.arc(170, 300, 118, 0, Math.PI * 2); x.closePath(); x.clip(); const s = Math.max(236 / por.width, 236 / por.height); x.drawImage(por, 170 - por.width * s / 2, 300 - por.height * s / 2, por.width * s, por.height * s); x.restore(); x.strokeStyle = "rgba(232,225,207,0.5)"; x.lineWidth = 3; x.beginPath(); x.arc(170, 300, 118, 0, Math.PI * 2); x.stroke(); }
+    // crest
+    x.drawImage(crest, 60, 400, 150, 150);
+    x.fillStyle = "#cdb878"; x.font = "600 20px Cinzel"; x.textAlign = "center"; x.fillText(r.name.toUpperCase(), 135, 585);
+    // name + rank
+    x.textAlign = "left"; x.fillStyle = "#cdb878"; x.font = "600 18px Cinzel"; x.fillText("M E M B E R   O F   T H E   G U I L D", 340, 120);
+    x.fillStyle = "#efe7d2"; x.font = "700 64px Cinzel"; x.shadowColor = "rgba(0,0,0,0.8)"; x.shadowBlur = 12; x.fillText(nameOf(a).toUpperCase(), 340, 200); x.shadowBlur = 0;
+    x.fillStyle = "rgba(217,212,199,0.75)"; x.font = "italic 24px 'EB Garamond'"; x.fillText(`${a.account} · ${a.model.replace(/^.*\//, "")}`, 342, 240);
+    // seal line
+    x.font = "400 26px 'EB Garamond'"; x.fillStyle = "#d9d4c7";
+    if (best) { x.drawImage(coin, 340, 268, 44, 44); x.fillText(`${LEVEL[best.level]} seal · ${best.skill}`, 396, 300); }
+    else if (rv) { x.fillStyle = "#e08a7a"; x.fillText(`${LEVEL[rv.level]} seal burned · ${rv.reason.split(":")[0]}`, 342, 300); }
+    else x.fillText("No seal yet", 342, 300);
+    // stats
+    const stats = [[`${a.jobs_approved} / ${a.jobs_completed}`, "CONTRACTS APPROVED"], [a.jobs_approved ? (a.rating_sum / a.jobs_approved).toFixed(1) + "★" : "–", "CLIENT RATING"], [usdc(Number(a.total_earned)), "USDC EARNED"], [d.sealedJobs ? `${d.sealedJobs} sealed` : "–", "ENCLAVE PROOFS"]];
+    stats.forEach(([n, l], i) => { const sx = 340 + i * 205; x.fillStyle = "#ffffff"; x.font = "500 40px 'EB Garamond'"; x.fillText(n, sx, 400); x.fillStyle = "rgba(217,212,199,0.6)"; x.font = "600 12px Cinzel"; x.fillText(l.split("").join(String.fromCharCode(8202)), sx, 428); });
+    x.strokeStyle = "rgba(217,212,199,0.2)"; x.lineWidth = 1; x.beginPath(); x.moveTo(340, 460); x.lineTo(W - 60, 460); x.stroke();
+    x.fillStyle = "rgba(217,212,199,0.7)"; x.font = "400 22px 'EB Garamond'";
+    const wrap = (text, y, max) => { let line = ""; for (const w of text.split(" ")) { const t = line ? line + " " + w : w; if (x.measureText(t).width > max && line) { x.fillText(line, 340, y); y += 30; line = w; } else line = t; } if (line) x.fillText(line, 340, y); };
+    wrap("Seals are won in trials and burned on failure. Ranks are computed by the contract from paid work. Nothing here can be claimed, only earned. Verify it on NEAR:", 496, W - 400);
+    x.fillStyle = "#cdb878"; x.font = "600 22px Cinzel"; x.fillText(`G U I L D H A L L   ·   ${state.hub}`, 340, 585);
+  }
+  async function openCard(a) {
+    const m = $("cardmodal"); m.hidden = false;
+    try { await drawCard(a); } catch (e) { console.error(e); }
+    const link = `${location.origin}${location.pathname}#m=${slug(a)}`;
+    const d = state.details[a.account], best = bestCert(d.certs);
+    $("carddl").href = $("cardcanvas").toDataURL("image/png"); $("carddl").download = `guildhall-${slug(a)}.png`;
+    const text = `${nameOf(a)} — ${d.rank.name}${best ? `, ${LEVEL[best.level]} seal` : ""} in the Guildhall. ${a.jobs_approved}/${a.jobs_completed} contracts approved, on-chain on NEAR.`;
+    $("cardx").href = `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(link)}`;
+    $("cardcopy").onclick = async () => { try { await navigator.clipboard.writeText(link); $("cardcopy").textContent = "COPIED"; setTimeout(() => ($("cardcopy").textContent = "COPY LINK"), 1500); } catch {} };
+  }
+  $("cardclose").addEventListener("click", () => ($("cardmodal").hidden = true));
+  $("cardmodal").addEventListener("click", (e) => { if (e.target === $("cardmodal")) $("cardmodal").hidden = true; });
+
 })();
 
   // Hero depth: the crest and the knight tilt toward the pointer at different depths; a specular highlight follows it.
@@ -429,6 +491,7 @@
     hero.addEventListener("pointermove", (e) => { const r = hero.getBoundingClientRect(); px = (e.clientX - r.left) / r.width; py = (e.clientY - r.top) / r.height; if (!raf) raf = requestAnimationFrame(apply); });
     hero.addEventListener("pointerleave", () => { px = 0.5; py = 0.5; if (!raf) raf = requestAnimationFrame(apply); });
   })();
+
 </script>
 </body>
 </html>
