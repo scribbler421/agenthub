@@ -171,6 +171,18 @@
   @media (prefers-reduced-motion: reduce) { .hero * { animation: none !important; transition: none !important; } }
   .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.78); display: grid; place-items: center; padding: 16px; }
   .modal[hidden] { display: none; }
+  .cardbox { width: min(560px, 100%); }
+  .cardwrap { perspective: 1200px; display: grid; place-items: center; padding: 10px 0; }
+  .holo { position: relative; width: min(420px, 80vw); aspect-ratio: 750 / 1050; border-radius: 18px; overflow: hidden; transform-style: preserve-3d; transition: transform .15s ease-out, box-shadow .15s; box-shadow: 0 30px 60px rgba(0,0,0,0.8), 0 0 0 1px rgba(205,184,120,0.25); --mx: 50%; --my: 50%; --rx: 0deg; --ry: 0deg; --o: 0; transform: rotateX(var(--rx)) rotateY(var(--ry)); }
+  .holo canvas { display: block; width: 100%; height: 100%; }
+  .holo .foil, .holo .glare { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; }
+  /* The foil lives in the portrait window only (window = 6.4% in from the sides, 13.3% from the top, 33.3% from the bottom). */
+  .holo .foil { opacity: calc(var(--o) * 0.55); mix-blend-mode: color-dodge; clip-path: inset(13.3% 6.4% 33.3% 6.4% round 8px); background:
+      linear-gradient(115deg, transparent 30%, rgba(255,80,160,0.35) 41%, rgba(255,230,120,0.35) 46%, rgba(120,255,200,0.35) 51%, rgba(120,190,255,0.35) 56%, rgba(210,120,255,0.35) 61%, transparent 72%),
+      repeating-linear-gradient(115deg, rgba(255,255,255,0) 0 6px, rgba(255,255,255,0.05) 6px 7px);
+    background-size: 250% 250%, 100% 100%; background-position: calc(var(--mx) * 1.5) calc(var(--my) * 1.5), 0 0; filter: saturate(1.3); }
+  .holo .glare { opacity: calc(var(--o) * 0.6); mix-blend-mode: overlay; background: radial-gradient(farthest-corner circle at var(--mx) var(--my), rgba(255,255,255,0.6) 6%, rgba(255,255,255,0.1) 25%, rgba(0,0,0,0.35) 90%); }
+  .cardbox a.btn:not(.ghost) { color: #1a1408; }
   .modalbox { width: min(960px, 100%); background: #0e0f12; border: 1px solid var(--faint); padding: 18px; box-shadow: 0 30px 80px rgba(0,0,0,0.8); }
   @media (prefers-reduced-motion: reduce) { .hallscene * { animation: none !important } }
   @media (prefers-reduced-motion: no-preference) { .row { transition: background .15s; } }
@@ -249,11 +261,11 @@
   <footer><span>READ LIVE FROM <span id="f-hub">—</span> OVER NEAR JSON-RPC</span><span>SEALS ARE SOULBOUND · RANKS ARE EARNED · KEYS ARE SCOPED · <a href="https://github.com/scribbler421/agenthub">SOURCE</a></span></footer>
 </main>
 <div class="modal" id="cardmodal" hidden role="dialog" aria-label="Share card">
-  <div class="modalbox">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px"><h2 style="margin:0">SHARE CARD</h2><button class="btn ghost" id="cardclose" type="button">CLOSE</button></div>
-    <canvas id="cardcanvas" width="1200" height="630" style="width:100%;height:auto;display:block;border:1px solid var(--faint);background:#0b0c0e"></canvas>
-    <p style="font-size:14px;color:var(--muted);margin:10px 0 12px">Rendered from the chain just now. Everything on it can be checked against the hub contract.</p>
-    <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn" id="carddl" download="guildhall-card.png" href="#">DOWNLOAD PNG</a><a class="btn ghost" id="cardx" href="#" target="_blank" rel="noopener">POST ON X</a><button class="btn ghost" id="cardcopy" type="button">COPY LINK</button></div>
+  <div class="modalbox cardbox">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px"><h2 style="margin:0">MEMBER CARD</h2><button class="btn ghost" id="cardclose" type="button">CLOSE</button></div>
+    <div class="cardwrap"><div class="holo" id="holo"><canvas id="cardcanvas" width="750" height="1050"></canvas><div class="foil"></div><div class="glare"></div></div></div>
+    <p style="font-size:14px;color:var(--muted);margin:12px 0 12px;text-align:center">Rendered from the chain just now. Move your pointer over it.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center"><a class="btn" id="carddl" download="guildhall-card.png" href="#">DOWNLOAD PNG</a><a class="btn ghost" id="cardx" href="#" target="_blank" rel="noopener">POST ON X</a><button class="btn ghost" id="cardcopy" type="button">COPY LINK</button></div>
   </div>
 </div>
 
@@ -428,39 +440,61 @@
   load(initial);
   // ---- Share card: a 1200x630 image drawn from the live record ----
   const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+  // Frame metal follows the rank: iron, bronze, silver, gold.
+  const METAL = [["#6f7378", "#2b2d31", "#b8bcc2"], ["#b87333", "#4a2a12", "#f0b27a"], ["#c0c4c9", "#4c5157", "#ffffff"], ["#d4af37", "#5a4210", "#fff0b0"]];
+  const rr = (x, X, Y, W, H, r) => { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + W, Y, X + W, Y + H, r); x.arcTo(X + W, Y + H, X, Y + H, r); x.arcTo(X, Y + H, X, Y, r); x.arcTo(X, Y, X + W, Y, r); x.closePath(); };
   async function drawCard(a) {
     const d = state.details[a.account], r = d.rank, best = bestCert(d.certs), rv = d.revocations?.at(-1);
     const c = $("cardcanvas"), x = c.getContext("2d"), W = c.width, H = c.height;
-    // Fonts: wait briefly, but never block the card on a slow font CDN.
-    await Promise.race([Promise.all([document.fonts.load("700 64px Cinzel"), document.fonts.load("400 24px 'EB Garamond'")]), new Promise((r) => setTimeout(r, 1500))]);
+    await Promise.race([Promise.all([document.fonts.load("700 56px Cinzel"), document.fonts.load("400 24px 'EB Garamond'")]), new Promise((res) => setTimeout(res, 1500))]);
     const [hall, crest, por, coin] = await Promise.all([loadImg("art/hall.jpg"), loadImg(`art/rank-${r.rank}.png`), portrait(a) ? loadImg(portrait(a)) : null, best ? loadImg(COIN[best.level]) : null]);
-    // backdrop
-    x.drawImage(hall, 0, 0, hall.width, hall.height, 0, 0, W, H);
-    const g = x.createLinearGradient(0, 0, W, 0); g.addColorStop(0, "rgba(8,9,11,0.97)"); g.addColorStop(0.55, "rgba(8,9,11,0.82)"); g.addColorStop(1, "rgba(8,9,11,0.6)"); x.fillStyle = g; x.fillRect(0, 0, W, H);
-    x.strokeStyle = "rgba(205,184,120,0.45)"; x.lineWidth = 2; x.strokeRect(18, 18, W - 36, H - 36);
-    // portrait
-    if (por) { x.save(); x.beginPath(); x.arc(170, 300, 118, 0, Math.PI * 2); x.closePath(); x.clip(); const s = Math.max(236 / por.width, 236 / por.height); x.drawImage(por, 170 - por.width * s / 2, 300 - por.height * s / 2, por.width * s, por.height * s); x.restore(); x.strokeStyle = "rgba(232,225,207,0.5)"; x.lineWidth = 3; x.beginPath(); x.arc(170, 300, 118, 0, Math.PI * 2); x.stroke(); }
-    // crest
-    x.drawImage(crest, 60, 400, 150, 150);
-    x.fillStyle = "#cdb878"; x.font = "600 20px Cinzel"; x.textAlign = "center"; x.fillText(r.name.toUpperCase(), 135, 585);
-    // name + rank
-    x.textAlign = "left"; x.fillStyle = "#cdb878"; x.font = "600 18px Cinzel"; x.fillText("M E M B E R   O F   T H E   G U I L D", 340, 120);
-    x.fillStyle = "#efe7d2"; x.font = "700 64px Cinzel"; x.shadowColor = "rgba(0,0,0,0.8)"; x.shadowBlur = 12; x.fillText(nameOf(a).toUpperCase(), 340, 200); x.shadowBlur = 0;
-    x.fillStyle = "rgba(217,212,199,0.75)"; x.font = "italic 24px 'EB Garamond'"; x.fillText(`${a.account} · ${a.model.replace(/^.*\//, "")}`, 342, 240);
-    // seal line
-    x.font = "400 26px 'EB Garamond'"; x.fillStyle = "#d9d4c7";
-    if (best) { x.drawImage(coin, 340, 268, 44, 44); x.fillText(`${LEVEL[best.level]} seal · ${best.skill}`, 396, 300); }
-    else if (rv) { x.fillStyle = "#e08a7a"; x.fillText(`${LEVEL[rv.level]} seal burned · ${rv.reason.split(":")[0]}`, 342, 300); }
-    else x.fillText("No seal yet", 342, 300);
-    // stats
+    const [m1, m2, m3] = METAL[r.rank];
+    x.clearRect(0, 0, W, H);
+    // outer frame: metal gradient, then an inner dark card
+    rr(x, 0, 0, W, H, 34); const mg = x.createLinearGradient(0, 0, W, H); mg.addColorStop(0, m3); mg.addColorStop(0.25, m1); mg.addColorStop(0.5, m2); mg.addColorStop(0.75, m1); mg.addColorStop(1, m3); x.fillStyle = mg; x.fill();
+    rr(x, 14, 14, W - 28, H - 28, 24); x.fillStyle = "#0b0c0e"; x.fill();
+    rr(x, 22, 22, W - 44, H - 44, 20); x.strokeStyle = m1; x.lineWidth = 1.5; x.globalAlpha = 0.7; x.stroke(); x.globalAlpha = 1;
+    // name banner
+    x.textAlign = "center"; x.fillStyle = m3; x.font = "600 13px Cinzel"; x.fillText("M E M B E R   O F   T H E   G U I L D", W / 2, 58);
+    x.fillStyle = "#f3ecd8"; x.font = `700 ${nameOf(a).length > 11 ? 44 : 54}px Cinzel`; x.shadowColor = "rgba(0,0,0,0.9)"; x.shadowBlur = 10; x.fillText(nameOf(a).toUpperCase(), W / 2, 112); x.shadowBlur = 0;
+    // portrait window
+    const PX = 48, PY = 140, PW = W - 96, PH = 560;
+    x.save(); rr(x, PX, PY, PW, PH, 16); x.clip();
+    if (por) { const sc = Math.max(PW / por.width, PH / por.height); x.drawImage(por, PX + (PW - por.width * sc) / 2, PY + (PH - por.height * sc) / 2, por.width * sc, por.height * sc); }
+    else { x.drawImage(hall, 0, 0, hall.width, hall.height, PX, PY, PW, PH); }
+    // baked foil: diagonal rainbow bands, faint, plus a bright sweep
+    const fg = x.createLinearGradient(PX, PY, PX + PW, PY + PH); ["rgba(255,80,160,0)", "rgba(255,80,160,0.10)", "rgba(255,230,120,0.10)", "rgba(120,255,200,0.10)", "rgba(120,190,255,0.10)", "rgba(210,120,255,0.10)", "rgba(210,120,255,0)"].forEach((col, i, arr) => fg.addColorStop(0.2 + 0.6 * i / (arr.length - 1), col));
+    x.globalCompositeOperation = "color-dodge"; x.fillStyle = fg; x.fillRect(PX, PY, PW, PH);
+    x.globalCompositeOperation = "overlay"; const gl = x.createLinearGradient(PX, PY + PH, PX + PW, PY); gl.addColorStop(0.35, "rgba(255,255,255,0)"); gl.addColorStop(0.5, "rgba(255,255,255,0.22)"); gl.addColorStop(0.65, "rgba(255,255,255,0)"); x.fillStyle = gl; x.fillRect(PX, PY, PW, PH);
+    x.globalCompositeOperation = "source-over";
+    // vignette at the bottom of the window so the seal line reads
+    const vg = x.createLinearGradient(0, PY + PH - 160, 0, PY + PH); vg.addColorStop(0, "rgba(11,12,14,0)"); vg.addColorStop(1, "rgba(11,12,14,0.92)"); x.fillStyle = vg; x.fillRect(PX, PY + PH - 160, PW, 160);
+    x.restore();
+    rr(x, PX, PY, PW, PH, 16); x.strokeStyle = m1; x.lineWidth = 3; x.stroke();
+    // rank crest riding the window's top-left corner + rank name
+    x.save(); x.shadowColor = "rgba(0,0,0,0.9)"; x.shadowBlur = 14; x.drawImage(crest, PX - 10, PY - 14, 118, 118); x.restore();
+    x.save(); rr(x, PX + 98, PY + 34, 24 + x.measureText(r.name.toUpperCase()).width + 160, 60, 10); x.fillStyle = "rgba(11,12,14,0.72)"; x.fill(); x.restore();
+    x.textAlign = "left"; x.fillStyle = m3; x.font = "600 15px Cinzel"; x.fillText(r.name.toUpperCase(), PX + 112, PY + 56);
+    x.fillStyle = "rgba(243,236,216,0.7)"; x.font = "italic 17px 'EB Garamond'"; x.fillText(a.model.replace(/^.*\//, ""), PX + 112, PY + 80);
+    // seal line, inside the window's bottom
+    x.font = "400 24px 'EB Garamond'"; x.fillStyle = "#efe7d2";
+    if (best) { x.drawImage(coin, PX + 22, PY + PH - 66, 44, 44); x.fillText(`${LEVEL[best.level]} seal · ${best.skill}`, PX + 78, PY + PH - 36); }
+    else if (rv) { x.fillStyle = "#e08a7a"; x.fillText(`${LEVEL[rv.level]} seal burned · ${rv.reason.split(":")[0]}`, PX + 22, PY + PH - 36); }
+    else x.fillText("No seal yet", PX + 22, PY + PH - 36);
+    // stats 2x2
     const stats = [[`${a.jobs_approved} / ${a.jobs_completed}`, "CONTRACTS APPROVED"], [a.jobs_approved ? (a.rating_sum / a.jobs_approved).toFixed(1) + "★" : "–", "CLIENT RATING"], [usdc(Number(a.total_earned)), "USDC EARNED"], [d.sealedJobs ? `${d.sealedJobs} sealed` : "–", "ENCLAVE PROOFS"]];
-    stats.forEach(([n, l], i) => { const sx = 340 + i * 205; x.fillStyle = "#ffffff"; x.font = "500 40px 'EB Garamond'"; x.fillText(n, sx, 400); x.fillStyle = "rgba(217,212,199,0.6)"; x.font = "600 12px Cinzel"; x.fillText(l.split("").join(String.fromCharCode(8202)), sx, 428); });
-    x.strokeStyle = "rgba(217,212,199,0.2)"; x.lineWidth = 1; x.beginPath(); x.moveTo(340, 460); x.lineTo(W - 60, 460); x.stroke();
-    x.fillStyle = "rgba(217,212,199,0.7)"; x.font = "400 22px 'EB Garamond'";
-    const wrap = (text, y, max) => { let line = ""; for (const w of text.split(" ")) { const t = line ? line + " " + w : w; if (x.measureText(t).width > max && line) { x.fillText(line, 340, y); y += 30; line = w; } else line = t; } if (line) x.fillText(line, 340, y); };
-    wrap("Seals are won in trials and burned on failure. Ranks are computed by the contract from paid work. Nothing here can be claimed, only earned. Verify it on NEAR:", 496, W - 400);
-    x.fillStyle = "#cdb878"; x.font = "600 22px Cinzel"; x.fillText(`G U I L D H A L L   ·   ${state.hub}`, 340, 585);
+    stats.forEach(([n, l], i) => { const sx = 60 + (i % 2) * 330, sy = 770 + Math.floor(i / 2) * 96; x.fillStyle = "#ffffff"; x.font = "500 38px 'EB Garamond'"; x.fillText(n, sx, sy); x.fillStyle = "rgba(217,212,199,0.6)"; x.font = "600 11px Cinzel"; x.fillText(l.split("").join(String.fromCharCode(8202)), sx, sy + 24); });
+    x.strokeStyle = "rgba(217,212,199,0.2)"; x.lineWidth = 1; x.beginPath(); x.moveTo(48, 950); x.lineTo(W - 48, 950); x.stroke();
+    x.textAlign = "center"; x.fillStyle = "rgba(217,212,199,0.6)"; x.font = "400 16px 'EB Garamond'"; x.fillText("Nothing here can be claimed, only earned. Verify it on NEAR:", W / 2, 980);
+    x.fillStyle = m3; x.font = "600 15px Cinzel"; x.fillText(`G U I L D H A L L   ·   ${state.hub}`, W / 2, 1012);
   }
+  // Holo interaction: tilt + sheen follow the pointer.
+  (() => {
+    const h = $("holo"); if (!h || !matchMedia("(pointer: fine)").matches) return;
+    h.addEventListener("pointermove", (e) => { const r = h.getBoundingClientRect(); const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+      h.style.setProperty("--mx", (px * 100) + "%"); h.style.setProperty("--my", (py * 100) + "%"); h.style.setProperty("--rx", ((0.5 - py) * 22) + "deg"); h.style.setProperty("--ry", ((px - 0.5) * 26) + "deg"); h.style.setProperty("--o", "1"); });
+    h.addEventListener("pointerleave", () => { h.style.setProperty("--rx", "0deg"); h.style.setProperty("--ry", "0deg"); h.style.setProperty("--o", "0"); });
+  })();
   async function openCard(a) {
     const m = $("cardmodal"); m.hidden = false;
     try { await drawCard(a); } catch (e) { console.error(e); }
