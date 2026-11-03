@@ -2,7 +2,7 @@
 //!
 //! One contract, four concerns:
 //! 1. Agents are sub-accounts of this contract (`name.<hub>`), created with a
-//!    single function-call key scoped to `accept_job,submit,withdraw` on the hub.
+//!    single function-call key scoped to `accept_job,submit,withdraw,post_note` on the hub.
 //!    The agent account has *no* full-access key: nobody can drain it, not even us.
 //! 2. Certs are soulbound NEP-171 tokens minted to agent accounts by the hub owner
 //!    after a published benchmark round. They carry a level and an expiry.
@@ -24,7 +24,7 @@ pub type CertLevel = u8; // 1 = Bronze, 2 = Silver, 3 = Gold
 
 const NS_PER_DAY: u64 = 86_400 * 1_000_000_000;
 const CERT_VALIDITY_NS: u64 = 90 * NS_PER_DAY;
-const AGENT_METHODS: &str = "accept_job,submit,withdraw";
+const AGENT_METHODS: &str = "accept_job,submit,withdraw,post_note";
 const MIN_AGENT_DEPOSIT: NearToken = NearToken::from_millinear(100); // 0.1 NEAR
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(10);
@@ -43,6 +43,7 @@ enum StorageKey {
     TrustedSigners,
     AgentsV3,
     Revocations,
+    Notes,
 }
 
 pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Legend"];
@@ -126,6 +127,19 @@ pub struct Revocation {
     pub revoked_at: u64,
     pub reason: String,
 }
+
+/// A line in a contract's thread. Only the client and the assigned member may
+/// write; the record is part of the contract, so a dispute reads it as-is.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    pub author: AccountId,
+    pub text: String,
+    pub at: u64,
+}
+
+const MAX_NOTES_PER_JOB: usize = 20;
+const MAX_NOTE_LEN: usize = 500;
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq)]
@@ -226,6 +240,26 @@ pub struct AgentHub {
     /// Attested TEE signer addresses (lowercase hex, no 0x) → label.
     trusted_signers: IterableMap<String, String>,
     revocations: LookupMap<AccountId, Vec<Revocation>>,
+    notes: LookupMap<JobId, Vec<Note>>,
+}
+
+/// v4 layout (before contract notes), read once by `migrate_v5`.
+mod v4 {
+    use super::*;
+    #[near(serializers = [borsh])]
+    pub struct State {
+        pub owner: AccountId,
+        pub token: AccountId,
+        pub fee_bps: u16,
+        pub agents: IterableMap<AccountId, AgentProfile>,
+        pub certs: LookupMap<AccountId, Vec<Cert>>,
+        pub jobs: IterableMap<JobId, Job>,
+        pub next_job_id: JobId,
+        pub balances: LookupMap<AccountId, u128>,
+        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+        pub trusted_signers: IterableMap<String, String>,
+        pub revocations: LookupMap<AccountId, Vec<Revocation>>,
+    }
 }
 
 /// v3 layout (before revocation records), read once by `migrate_v4`.
@@ -344,6 +378,7 @@ impl AgentHub {
             withdrawn_today: LookupMap::new(StorageKey::WithdrawnToday),
             trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
             revocations: LookupMap::new(StorageKey::Revocations),
+            notes: LookupMap::new(StorageKey::Notes),
         }
     }
 
@@ -379,6 +414,7 @@ impl AgentHub {
             next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
             revocations: LookupMap::new(StorageKey::Revocations),
+            notes: LookupMap::new(StorageKey::Notes),
         }
     }
 
@@ -403,6 +439,7 @@ impl AgentHub {
             next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: old.trusted_signers,
             revocations: LookupMap::new(StorageKey::Revocations),
+            notes: LookupMap::new(StorageKey::Notes),
         }
     }
 
@@ -423,13 +460,28 @@ impl AgentHub {
             owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents: old.agents, certs: old.certs, jobs: old.jobs,
             next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: old.trusted_signers, revocations,
+            notes: LookupMap::new(StorageKey::Notes),
+        }
+    }
+
+    /// v4 → v5: adds contract notes. Owner-only via #[private].
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate_v5() -> Self {
+        let old: v4::State = env::state_read().expect("no v4 state");
+        env::log_str("migrated to v5 (contract notes)");
+        Self {
+            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents: old.agents, certs: old.certs, jobs: old.jobs,
+            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: old.trusted_signers, revocations: old.revocations,
+            notes: LookupMap::new(StorageKey::Notes),
         }
     }
 
     // ----------------------------------------------------------------- Agents
 
     /// Creates `name.<hub>` with ONE function-call key limited to
-    /// `accept_job,submit,withdraw` on this contract, funds it with the attached
+    /// `accept_job,submit,withdraw,post_note` on this contract, funds it with the attached
     /// deposit, and registers the profile once the account exists.
     /// The caller becomes the agent's human owner.
     #[payable]
@@ -770,6 +822,33 @@ impl AgentHub {
 
     /// Client approves: budget minus fee is credited to the agent's in-contract
     /// balance; fee goes to the platform; rating and stats are recorded.
+    /// Client or assigned member writes a line into the contract's thread.
+    /// Open contracts take client notes only (no member yet); settled ones are closed.
+    pub fn post_note(&mut self, job_id: JobId, text: String) {
+        let job = self.jobs.get(&job_id).expect("unknown job");
+        let who = env::predecessor_account_id();
+        require!(who == job.client || job.agent.as_ref() == Some(&who), "only the client or the assigned member may post");
+        require!(matches!(job.status, JobStatus::Open | JobStatus::Accepted | JobStatus::Submitted), "contract is settled");
+        self.push_note(job_id, who, text);
+    }
+
+    fn push_note(&mut self, job_id: JobId, author: AccountId, text: String) {
+        let text = text.trim().to_string();
+        require!(!text.is_empty() && text.chars().count() <= MAX_NOTE_LEN, "note must be 1..=500 characters");
+        let mut notes = self.notes.get(&job_id).cloned().unwrap_or_default();
+        require!(notes.len() < MAX_NOTES_PER_JOB, "thread is full");
+        notes.push(Note { author: author.clone(), text: text.clone(), at: env::block_timestamp() });
+        self.notes.insert(job_id, notes);
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"guildhall","version":"1.0.0","event":"note","data":{{"job_id":{},"author":"{}","text":{}}}}}"#,
+            job_id, author, serde_json::to_string(&text).unwrap_or_default()
+        ));
+    }
+
+    pub fn get_notes(&self, job_id: JobId) -> Vec<Note> {
+        self.notes.get(&job_id).cloned().unwrap_or_default()
+    }
+
     pub fn approve(&mut self, job_id: JobId, rating: u8) {
         require!((1..=5).contains(&rating), "rating must be 1..=5");
         let client = env::predecessor_account_id();
@@ -813,6 +892,8 @@ impl AgentHub {
             p.jobs_rejected += 1;
         }
         env::log_str(&format!("job {} rejected: {}", job_id, reason));
+        // The reason joins the contract's thread, so it is on the record next to any notes that led to it.
+        if !reason.trim().is_empty() { self.push_note(job_id, client.clone(), format!("Rejected: {}", reason.chars().take(MAX_NOTE_LEN - 10).collect::<String>())); }
         self.log_job(job_id, "job_rejected");
         self.ft_transfer(client, budget, format!("refund job {}", job_id))
     }
@@ -1218,6 +1299,30 @@ mod tests {
         assert_eq!(revs.len(), 2);
         assert_eq!(revs[1].reason, "failed re-trial");
         assert_eq!(revs[1].level, 1);
+    }
+
+    #[test]
+    fn notes_are_for_the_two_parties_only() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 3, "".into());
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        testing_env!(ctx(accounts(2)).build());
+        c.post_note(id, "Only the first document counts.".into());
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        c.post_note(id, "Understood; the second page is ignored.".into());
+        assert_eq!(c.get_notes(id).len(), 2);
+        assert_eq!(c.get_notes(id)[1].author, agent());
+    }
+
+    #[test]
+    #[should_panic(expected = "only the client or the assigned member")]
+    fn strangers_cannot_post_notes() {
+        let mut c = setup();
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        testing_env!(ctx(accounts(5)).build());
+        c.post_note(id, "hello".into());
     }
 
     #[test]

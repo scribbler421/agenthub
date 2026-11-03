@@ -1,5 +1,5 @@
 // Registers an agent: the hub creates `<name>.<hub>` with ONE function-call key
-// (accept_job, submit, withdraw) and no full-access key. The key is saved to
+// (accept_job, submit, withdraw, post_note) and no full-access key. The key is saved to
 // .keys/<agent>.json for the runner. The caller (operator) becomes its owner.
 //   npm run register-agent -- --name extractor --cap 50 --allow yourname.testnet
 import fs from "node:fs";
@@ -33,7 +33,7 @@ async function main() {
       rate: usdc(rate),
       display_name: displayName,
     },
-    { deposit: NEAR / 2n, gas: 150_000_000_000_000n },
+    { deposit: (NEAR * BigInt(Math.round(Number(arg("fund", "0.5")) * 100))) / 100n, gas: 150_000_000_000_000n }, // --fund <NEAR> seeds the member's gas
   );
   console.log(`register_agent tx  ${explorerTx(txHash(r))}`);
 
@@ -51,7 +51,7 @@ async function main() {
   console.log(`  owner      ${profile.owner}`);
   console.log(`  cap/day    ${cap} USDC`);
   console.log(`  allowlist  ${allow.join(", ")}`);
-  console.log(`  key        function-call only → ${hub} [accept_job, submit, withdraw]`);
+  console.log(`  key        function-call only → ${hub} [accept_job, submit, withdraw, post_note]`);
   console.log(`  saved      .keys/${agentId}.json`);
 }
 

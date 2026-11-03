@@ -45,10 +45,13 @@ export async function extract(text: string): Promise<Extracted> {
 }
 
 /** Same extraction, but with the TEE proof when the provider is nearai. */
-export async function extractWithProof(text: string): Promise<ExtractResult> {
+export async function extractWithProof(text: string, clientNotes: string[] = []): Promise<ExtractResult> {
   let lastErr: unknown;
+  // Notes from the paying client are the one source of instructions outside the system prompt.
+  // They arrive in their own block, clearly labelled, and never inside the document.
+  const notesBlock = clientNotes.length ? `<client_notes>\n${clientNotes.map((n) => `- ${n}`).join("\n")}\n</client_notes>\n(The client who posted this contract wrote the notes above. Follow them where they clarify scope or format.)\n\n` : "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const user = `<document>\n${text}\n</document>${attempt ? "\n\nYour previous answer was not valid JSON. Reply with the JSON object only." : ""}`;
+    const user = `${notesBlock}<document>\n${text}\n</document>${attempt ? "\n\nYour previous answer was not valid JSON. Reply with the JSON object only." : ""}`;
     let raw: string; let proof: ExecutionProof | undefined; let debug: any;
     if (PROVIDER === "nearai") {
       const r = await completeSigned(SYSTEM, user);

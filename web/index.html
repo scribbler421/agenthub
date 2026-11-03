@@ -169,6 +169,13 @@
   @keyframes rise { 0% { transform: translateY(0) scale(1); opacity: 0; } 10% { opacity: 0.9; } 100% { transform: translateY(-420px) translateX(30px) scale(0.3); opacity: 0; } }
   @media (max-width: 900px) { .hero { grid-template-columns: 1fr; padding: 28px 20px; min-height: 0; } .stage { height: 440px; } .crest3d { width: 58%; margin-top: -200px; left: 0; } .bot3d { width: 36%; } .stage .label { width: 58%; left: 0; } }
   @media (prefers-reduced-motion: reduce) { .hero * { animation: none !important; transition: none !important; } }
+  tr.thread td { padding: 0 0 10px 44px; border-top: none; }
+  .notes { display: grid; gap: 4px; border-left: 2px solid var(--faint); padding-left: 12px; }
+  .note { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; gap: 12px; font-size: 14px; align-items: baseline; }
+  .note .who { font-family: var(--font-display); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+  .note.member .who { color: var(--brass); }
+  .note .what { color: var(--text); }
+  .note .when { color: var(--faint); font-size: 12px; white-space: nowrap; }
   .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.78); display: grid; place-items: center; padding: 16px; }
   .modal[hidden] { display: none; }
   .cardbox { width: min(560px, 100%); }
@@ -395,6 +402,11 @@
     $("sharebtn").addEventListener("click", () => openCard(a));
   }
 
+  // The thread under a contract: who said what, in order, straight from the chain.
+  function thread(j, byAcct) {
+    const notes = state.notes?.[j.id] ?? []; if (!notes.length) return "";
+    return `<tr class="thread"><td colspan="9"><div class="notes">${notes.map((n) => `<div class="note ${n.author === j.client ? "client" : "member"}"><span class="who">${esc(n.author === j.client ? "client" : (byAcct[n.author] ?? n.author.split(".")[0]))}</span><span class="what">${esc(n.text)}</span><span class="when">${day(n.at)}</span></div>`).join("")}</div></td></tr>`;
+  }
   function renderJobs() {
     const byAcct = Object.fromEntries(state.agents.map((a) => [a.account, nameOf(a)]));
     $("jobs").innerHTML = state.jobs.length ? state.jobs.slice().reverse().map((j) => `<tr>
@@ -402,7 +414,7 @@
       <td>${LEVEL[j.min_level]} seal${j.min_rank ? ` · ${["", "Journeyman", "Master", "Legend"][j.min_rank]}` : ""}${j.require_proof ? ` · <span class="sealed">sealed</span>` : ""}</td>
       <td>${esc(j.client)}</td><td>${j.agent ? esc(byAcct[j.agent] ?? j.agent) : "–"}</td>
       <td class="num">${usdc(j.budget)}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td>
-      <td>${j.proof ? `<span class="sealed" title="${esc(j.proof.signing_address)}">enclave ${esc(j.proof.signing_address.slice(0, 8))}…</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")
+      <td>${j.proof ? `<span class="sealed" title="${esc(j.proof.signing_address)}">enclave ${esc(j.proof.signing_address.slice(0, 8))}…</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>${thread(j, byAcct)}`).join("")
       : `<tr><td colspan="9" class="empty">No contracts posted yet.</td></tr>`;
   }
 
@@ -411,6 +423,9 @@
     try {
       const [stats, agents, jobs, signers] = await Promise.all([view(hub, "get_stats"), view(hub, "list_agents"), view(hub, "list_jobs", { limit: 500 }), view(hub, "list_trusted_signers")]);
       state.agents = agents; state.jobs = jobs; state.feeBps = Number(stats.fee_bps);
+      // Contract threads (client ↔ member notes). Older hubs have no get_notes; treat as empty.
+      const threads = await Promise.all(jobs.map((j) => view(hub, "get_notes", { job_id: j.id }).catch(() => [])));
+      state.notes = Object.fromEntries(jobs.map((j, i) => [j.id, threads[i]]));
       const details = await Promise.all(agents.map(async (a) => {
         const [certs, balance, rank, revocations] = await Promise.all([view(hub, "get_certs", { agent: a.account }), view(hub, "get_balance", { account: a.account }), view(hub, "get_rank", { agent: a.account }), view(hub, "get_revocations", { agent: a.account }).catch(() => [])]);
         const sealedJobs = jobs.filter((j) => j.agent === a.account && j.proof).length;

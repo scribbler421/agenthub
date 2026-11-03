@@ -14,7 +14,8 @@
     "approve": "tsx src/approve.ts",
     "attack": "tsx src/attack.ts",
     "status": "tsx src/status.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "note": "tsx src/note.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
