@@ -3,7 +3,7 @@
 //   npm run post-job -- --spec samples/job-invoices.json --budget 5 --min-level 2
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { accountFromEnv, call, env, arg, hasFlag, usdc, fmtUsdc, ONE_YOCTO, txHash, explorerTx, view } from "./near.js";
+import { accountFromEnv, call, env, arg, hasFlag, usdc, fmtUsdc, ONE_YOCTO, NEAR, txHash, explorerTx, view } from "./near.js";
 
 async function main() {
   const client = await accountFromEnv("CLIENT");
@@ -28,6 +28,8 @@ async function main() {
     console.log(`minted 100 demo USDC to ${client.accountId}  ${explorerTx(txHash(m))}`);
   }
 
+  // The hub charges the client for the storage the job record adds.
+  await call(client, hub, "storage_deposit", {}, { deposit: NEAR / 20n });
   const msg = JSON.stringify({ skill: "document-extraction", min_level: minLevel, spec_uri: specUri, min_rank: minRank, require_proof: requireProof });
   const r = await call(client, token, "ft_transfer_call", { receiver_id: hub, amount: usdc(budget), msg }, { deposit: ONE_YOCTO, gas: 100_000_000_000_000n });
   console.log(`ft_transfer_call ${fmtUsdc(usdc(budget))} → ${hub}  ${explorerTx(txHash(r))}`);

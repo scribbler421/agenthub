@@ -28,14 +28,36 @@ const AGENT_METHODS: &str = "accept_job,submit,withdraw,post_note";
 const MIN_AGENT_DEPOSIT: NearToken = NearToken::from_millinear(100); // 0.1 NEAR
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(10);
+const GAS_MIGRATE: Gas = Gas::from_tgas(80);
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 /// Hard ceiling on the guild fee. The owner can move the fee below this, never above.
 pub const MAX_FEE_BPS: u16 = 800;
+/// Smallest job the hub will escrow. 1_000_000 is 1 USDC when the token has 6 decimals.
+/// Below this, a 6% fee rounds away and rank can be farmed for nothing.
+pub const MIN_JOB_BUDGET: u128 = 1_000_000;
 /// After submit, the client has this long to approve or dispute. Then anyone may settle.
 pub const DEFAULT_REVIEW_WINDOW_NS: u64 = 5 * NS_PER_DAY;
+/// After accept, the member has this long to submit. Then anyone may return the escrow.
+pub const DEFAULT_ACCEPT_WINDOW_NS: u64 = 3 * NS_PER_DAY;
 /// A dispute the arbiter leaves unresolved for this long may be settled by anyone at the fallback split.
 pub const DISPUTE_FALLBACK_NS: u64 = 30 * NS_PER_DAY;
+/// A pending refund whose callback never arrived may be sent again after this long.
+pub const PENDING_REFUND_TIMEOUT_NS: u64 = NS_PER_DAY;
 pub const FALLBACK_MEMBER_BPS: u16 = 5_000;
+/// Journeyman requires a real client rating of at least this (x10, so 40 = 4.0).
+const JOURNEYMAN_AVG10: u32 = 40;
+const MAX_SKILL_LEN: usize = 64;
+const MAX_SPEC_URI: usize = 256;
+const MAX_OUTPUT_URI: usize = 256;
+const MAX_SCORE_URI: usize = 256;
+const MAX_MODEL_LEN: usize = 80;
+const MAX_SKILLS: usize = 8;
+const MAX_SKILL_ITEM: usize = 32;
+const MAX_ALLOWLIST: usize = 8;
+const MAX_SIGNER_LABEL: usize = 64;
+const MAX_PROOF_FIELD: usize = 200;
+/// Bytes of hub storage retained from a registration deposit, then settled in the callback.
+const REGISTRATION_STORAGE_BYTES: u128 = 3_000;
 /// Storage key (outside the state struct) for proposed upgrade code.
 const UPGRADE_CODE_KEY: &[u8] = b"__upgrade_code";
 
@@ -55,7 +77,15 @@ enum StorageKey {
     Notes,
     AgentsV4,
     JobsV3,
+    // v7 maps. Appended so existing prefixes keep their indexes.
+    AgentsV5,
+    JobsV4,
+    StoragePrepaid,
+    UsedProofs,
+    SealFloor,
 }
+
+mod migrate;
 
 pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Legend"];
 
@@ -85,6 +115,11 @@ pub struct AgentProfile {
     pub display_name: String,
     /// Approvals that carried a rating. Auto-approvals (silent client) count as approved but unrated.
     pub rating_count: u32,
+    /// Rank ignores self-deals and silent auto-approvals. The counters above stay the public work record.
+    pub rank_jobs_completed: u32,
+    pub rank_jobs_approved: u32,
+    pub rank_rating_sum: u32,
+    pub rank_rating_count: u32,
 }
 
 /// Rank is computed from the account's own work history. Exams never raise it.
@@ -98,10 +133,10 @@ pub struct Rank {
     pub next: Option<String>,
 }
 
-/// A TEE execution proof from NEAR AI Cloud: the enclave signed
-/// "<model>:<sha256(request)>:<sha256(response)>" (EIP-191, secp256k1).
-/// The contract recovers the signer with `ecrecover` and checks it is a
-/// trusted (attested) signer registered by the owner.
+/// An enclave signature over this job and the output it delivers.
+/// EIP-191 text, provider_tee:
+/// `job:<id>:out:<sha256 in output_uri>:<model>:<request_hash>:<response_hash>`.
+/// Gateway signatures omit the model. The same signature cannot be used twice.
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug)]
 pub struct ExecutionProof {
@@ -155,7 +190,7 @@ const MAX_NOTES_PER_JOB: usize = 20;
 const MAX_NOTE_LEN: usize = 500;
 
 #[near(serializers = [borsh, json])]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum JobStatus {
     Open,
     Accepted,
@@ -168,12 +203,14 @@ pub enum JobStatus {
     Disputed,
     /// Dispute settled (by the arbiter or the fallback). `member_bps` records the split.
     Resolved,
+    /// Accepted, never submitted, and the accept window ran out. Escrow returned to the client.
+    Expired,
 }
 
 /// Money owed back to the client, tracked separately from the business outcome so a
 /// cancel and a dispute split share one refund path and nothing can be paid twice.
 #[near(serializers = [borsh, json])]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RefundStatus {
     None,
     /// Transfer sent; waiting for `on_refund`.
@@ -214,6 +251,12 @@ pub struct Job {
     pub refund: RefundStatus,
     /// Amount owed back to the client while `refund` is Pending or Failed.
     pub refund_amount: U128,
+    /// After `accepted_at + accept_window_ns`, anyone may release an accepted job that was never submitted.
+    pub accept_window_ns: u64,
+    pub accepted_at: Option<u64>,
+    /// Bumped every time a refund transfer is sent. A late callback from an older attempt is ignored.
+    pub refund_attempt: u32,
+    pub refund_started_at: Option<u64>,
 }
 
 /// `msg` of the `ft_transfer_call` that funds a job.
@@ -226,6 +269,8 @@ pub struct PostJobMsg {
     pub require_proof: Option<bool>,
     /// Review window in days (1..=30). Default 5.
     pub review_days: Option<u32>,
+    /// How long the member has to submit after accepting, in days (1..=30). Default 3.
+    pub accept_days: Option<u32>,
 }
 
 /// Where every token the hub holds is accounted for. `total` must equal the hub's
@@ -331,6 +376,13 @@ pub struct AgentHub {
     upgrade_delay_ns: u64,
     /// (sha256 of proposed code, proposed_at)
     pending_upgrade: Option<([u8; 32], u64)>,
+    /// NEAR prepaid by an account to cover hub storage for the records they add.
+    storage_prepaid: LookupMap<AccountId, u128>,
+    /// Normalized proof signatures already accepted, so a signature cannot be replayed.
+    used_proofs: LookupMap<String, u64>,
+    /// Per member, `(skill, issued_at)` of burned seals. A seal issued at or before one of
+    /// these times does not become current again.
+    seal_floor: LookupMap<AccountId, Vec<(String, u64)>>,
 }
 
 /// v5 layout (before escrow hardening), read once by `migrate_v6`.
@@ -391,7 +443,7 @@ mod v5 {
 #[near]
 impl AgentHub {
     /// `token` is the NEP-141 stablecoin used for budgets (USDC on NEAR).
-    /// `fee_bps` is the platform fee in basis points (1000 = 10%).
+    /// `fee_bps` is the platform fee in basis points, capped at [`MAX_FEE_BPS`] (800 = 8%).
     #[init]
     pub fn new(owner: AccountId, token: AccountId, fee_bps: u16, upgrade_delay_ns: Option<u64>) -> Self {
         require!(fee_bps <= MAX_FEE_BPS, "fee too high");
@@ -411,6 +463,9 @@ impl AgentHub {
             escrowed: 0, liabilities: 0, fees: 0, in_flight: 0, refunds_owed: 0,
             pending_owner: None, arbiter: owner, paused: false,
             upgrade_delay_ns: upgrade_delay_ns.unwrap_or(0), pending_upgrade: None,
+            storage_prepaid: LookupMap::new(StorageKey::StoragePrepaid),
+            used_proofs: LookupMap::new(StorageKey::UsedProofs),
+            seal_floor: LookupMap::new(StorageKey::SealFloor),
         }
     }
 
@@ -434,6 +489,7 @@ impl AgentHub {
                 created_at: a.created_at, rating_sum: a.rating_sum, jobs_rejected: a.jobs_rejected, rate: a.rate,
                 display_name: a.display_name.clone(),
                 rating_count: a.jobs_approved, // every approval so far carried a rating
+                rank_jobs_completed: 0, rank_jobs_approved: 0, rank_rating_sum: 0, rank_rating_count: 0,
             });
         }
         let fees = balances.get(&old.owner).copied().unwrap_or(0);
@@ -446,7 +502,7 @@ impl AgentHub {
             let refunded = matches!(j.status, JobStatus::Rejected | JobStatus::Cancelled);
             jobs.insert(*k, Job {
                 id: j.id, client: j.client.clone(), skill: j.skill.clone(), min_level: j.min_level, budget: j.budget,
-                spec_uri: j.spec_uri.clone(), agent: j.agent.clone(), output_uri: j.output_uri.clone(), status: j.status.clone(),
+                spec_uri: j.spec_uri.clone(), agent: j.agent.clone(), output_uri: j.output_uri.clone(), status: j.status,
                 rating: j.rating, created_at: j.created_at, updated_at: j.updated_at,
                 min_rank: j.min_rank, require_proof: j.require_proof, proof: j.proof.clone(),
                 fee_bps: 600, review_window_ns: DEFAULT_REVIEW_WINDOW_NS,
@@ -455,16 +511,111 @@ impl AgentHub {
                 member_bps: if j.status == JobStatus::Approved { Some(10_000) } else { None },
                 refund: if refunded { RefundStatus::Refunded } else { RefundStatus::None },
                 refund_amount: U128(0),
+                accept_window_ns: DEFAULT_ACCEPT_WINDOW_NS,
+                accepted_at: if j.status == JobStatus::Accepted { Some(j.updated_at) } else { None },
+                refund_attempt: 0,
+                refund_started_at: None,
             });
         }
+        Self::recompute_rank(&mut agents, &jobs);
         env::log_str(&format!("migrated to v6: {} agents, {} jobs, escrowed {}, liabilities {}, fees {}", agents.len(), jobs.len(), escrowed, liabilities, fees));
         Self {
             owner: old.owner.clone(), token: old.token, fee_bps: old.fee_bps.min(MAX_FEE_BPS), agents, certs: old.certs, jobs,
             next_job_id: old.next_job_id, balances, withdrawn_today: old.withdrawn_today,
             trusted_signers: old.trusted_signers, revocations: old.revocations, notes: old.notes,
             escrowed, liabilities, fees, in_flight: 0, refunds_owed: 0,
-            pending_owner: None, arbiter: old.owner, paused: false,
+            pending_owner: None, arbiter: old.owner.clone(), paused: false,
             upgrade_delay_ns, pending_upgrade: None,
+            storage_prepaid: LookupMap::new(StorageKey::StoragePrepaid),
+            used_proofs: LookupMap::new(StorageKey::UsedProofs),
+            seal_floor: LookupMap::new(StorageKey::SealFloor),
+        }
+    }
+
+    /// Read v6 (or the current layout) and write the current layout.
+    /// `apply_upgrade` schedules this. The first deploy of this wasm has to call it
+    /// from the hub account itself, because the previous `apply_upgrade` does not.
+    /// See MAINNET.md. Already-current state is left as it is.
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        // state_read panics when bytes exist but do not match T, so probe both layouts explicitly.
+        let bytes = env::storage_read(b"STATE").expect("no state");
+        if let Ok(current) = near_sdk::borsh::BorshDeserialize::try_from_slice(&bytes) {
+            env::log_str("migrate: state is already current");
+            return current;
+        }
+        let old: migrate::State = near_sdk::borsh::BorshDeserialize::try_from_slice(&bytes).unwrap_or_else(|_| env::panic_str("state is not current and not v6"));
+        env::log_str("migrate: v6 -> current");
+        Self::from_v6(old)
+    }
+
+    fn from_v6(mut old: migrate::State) -> Self {
+        let mut agents = IterableMap::new(StorageKey::AgentsV5);
+        let agent_ids: Vec<_> = old.agents.keys().cloned().collect();
+        for id in agent_ids {
+            let a = old.agents.remove(&id).expect("agent");
+            agents.insert(id, AgentProfile {
+                account: a.account, owner: a.owner, model: a.model, skills: a.skills,
+                jobs_completed: a.jobs_completed, jobs_approved: a.jobs_approved, total_earned: a.total_earned,
+                withdraw_cap_per_day: a.withdraw_cap_per_day, withdraw_allowlist: a.withdraw_allowlist,
+                created_at: a.created_at, rating_sum: a.rating_sum, jobs_rejected: a.jobs_rejected,
+                rate: a.rate, display_name: a.display_name, rating_count: a.rating_count,
+                rank_jobs_completed: 0, rank_jobs_approved: 0, rank_rating_sum: 0, rank_rating_count: 0,
+            });
+        }
+        let mut jobs = IterableMap::new(StorageKey::JobsV4);
+        let mut used_proofs = LookupMap::new(StorageKey::UsedProofs);
+        let job_ids: Vec<_> = old.jobs.keys().cloned().collect();
+        for id in job_ids {
+            let j = old.jobs.remove(&id).expect("job");
+            if let Some(p) = &j.proof {
+                let sig = normalize_hex(&p.signature);
+                if !sig.is_empty() && !used_proofs.contains_key(&sig) {
+                    used_proofs.insert(sig, j.id);
+                }
+            }
+            jobs.insert(id, Job {
+                id: j.id, client: j.client, skill: j.skill, min_level: j.min_level, budget: j.budget,
+                spec_uri: j.spec_uri, agent: j.agent, output_uri: j.output_uri, status: j.status,
+                rating: j.rating, created_at: j.created_at, updated_at: j.updated_at,
+                min_rank: j.min_rank, require_proof: j.require_proof, proof: j.proof,
+                fee_bps: j.fee_bps, review_window_ns: j.review_window_ns, submitted_at: j.submitted_at,
+                disputed_at: j.disputed_at, member_bps: j.member_bps, refund: j.refund, refund_amount: j.refund_amount,
+                accept_window_ns: DEFAULT_ACCEPT_WINDOW_NS,
+                accepted_at: if j.status == JobStatus::Accepted { Some(j.updated_at) } else { None },
+                refund_attempt: if j.refund == RefundStatus::Pending { 1 } else { 0 },
+                refund_started_at: if j.refund == RefundStatus::Pending { Some(j.updated_at) } else { None },
+            });
+        }
+        Self::recompute_rank(&mut agents, &jobs);
+        Self {
+            owner: old.owner, token: old.token, fee_bps: old.fee_bps.min(MAX_FEE_BPS),
+            agents, certs: old.certs, jobs, next_job_id: old.next_job_id,
+            balances: old.balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: old.trusted_signers, revocations: old.revocations, notes: old.notes,
+            escrowed: old.escrowed, liabilities: old.liabilities, fees: old.fees,
+            in_flight: old.in_flight, refunds_owed: old.refunds_owed,
+            pending_owner: old.pending_owner, arbiter: old.arbiter, paused: old.paused,
+            upgrade_delay_ns: old.upgrade_delay_ns, pending_upgrade: old.pending_upgrade,
+            storage_prepaid: LookupMap::new(StorageKey::StoragePrepaid),
+            used_proofs,
+            seal_floor: LookupMap::new(StorageKey::SealFloor),
+        }
+    }
+
+    /// Rank is rebuilt from settled jobs so a self-deal or a silent auto-approval does not keep a farmed rank.
+    fn recompute_rank(agents: &mut IterableMap<AccountId, AgentProfile>, jobs: &IterableMap<JobId, Job>) {
+        for job in jobs.values() {
+            let Some(agent_id) = job.agent.as_ref() else { continue };
+            let Some(profile) = agents.get_mut(agent_id) else { continue };
+            if job.client == profile.owner { continue; }
+            let bps = job.member_bps.unwrap_or(if job.status == JobStatus::Approved { 10_000 } else { 0 });
+            match job.status {
+                JobStatus::Approved | JobStatus::Resolved => Self::add_rank(profile, false, bps, job.rating),
+                JobStatus::Rejected => { profile.rank_jobs_completed += 1; }
+                _ => {}
+            }
         }
     }
 
@@ -487,7 +638,12 @@ impl AgentHub {
         display_name: Option<String>,
     ) -> Promise {
         let deposit = env::attached_deposit();
-        require!(deposit >= MIN_AGENT_DEPOSIT, "attach at least 0.1 NEAR");
+        let storage_held = env::storage_byte_cost().saturating_mul(REGISTRATION_STORAGE_BYTES);
+        require!(
+            deposit >= MIN_AGENT_DEPOSIT.saturating_add(storage_held),
+            "attach at least 0.1 NEAR for the agent plus storage"
+        );
+        let for_agent = deposit.saturating_sub(storage_held);
         require!(
             !name.is_empty()
                 && name.len() <= 32
@@ -515,11 +671,17 @@ impl AgentHub {
             rate: rate.unwrap_or(U128(0)),
             display_name: display_name.unwrap_or_default(),
             rating_count: 0,
+            rank_jobs_completed: 0, rank_jobs_approved: 0, rank_rating_sum: 0, rank_rating_count: 0,
         };
+        require!(profile.model.len() <= MAX_MODEL_LEN, "model is too long");
+        require!(profile.display_name.chars().count() <= 40, "display name must be 40 chars or fewer");
+        require!(profile.skills.len() <= MAX_SKILLS, "too many skills");
+        require!(profile.skills.iter().all(|s| s.len() <= MAX_SKILL_ITEM && !s.contains(':')), "skill is too long");
+        require!(profile.withdraw_allowlist.len() <= MAX_ALLOWLIST, "allowlist is too long");
 
         Promise::new(account)
             .create_account()
-            .transfer(deposit)
+            .transfer(for_agent)
             .add_access_key_allowance(
                 public_key,
                 Allowance::unlimited(),
@@ -529,7 +691,7 @@ impl AgentHub {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(GAS_CALLBACK)
-                    .on_agent_created(profile, deposit),
+                    .on_agent_created(profile, deposit, storage_held),
             )
     }
 
@@ -538,12 +700,20 @@ impl AgentHub {
         &mut self,
         profile: AgentProfile,
         deposit: NearToken,
+        storage_held: NearToken,
         #[callback_result] result: Result<(), PromiseError>,
     ) -> Option<AgentProfile> {
         match result {
             Ok(()) => {
+                let before = env::storage_usage();
                 let account = profile.account.clone();
                 self.agents.insert(account.clone(), profile.clone());
+                let grew = env::storage_usage().saturating_sub(before) as u128;
+                let cost = env::storage_byte_cost().saturating_mul(grew);
+                let refund = storage_held.as_yoctonear().saturating_sub(cost.as_yoctonear());
+                if refund > 0 {
+                    let _ = Promise::new(profile.owner.clone()).transfer(NearToken::from_yoctonear(refund));
+                }
                 env::log_str(&format!("agent registered: {}", account));
                 Some(profile)
             }
@@ -579,17 +749,26 @@ impl AgentHub {
     pub fn set_display_name(&mut self, agent: AccountId, display_name: String) {
         require!(display_name.chars().count() <= 40, "display name must be 40 chars or fewer");
         let caller = env::predecessor_account_id();
-        let p = self.agents.get_mut(&agent).expect("unknown agent");
-        require!(p.owner == caller, "only the agent's owner can set the display name");
-        p.display_name = display_name;
+        let before = env::storage_usage();
+        {
+            let p = self.agents.get_mut(&agent).expect("unknown agent");
+            require!(p.owner == caller, "only the agent's owner can set the display name");
+            p.display_name = display_name;
+        }
+        self.charge_payer(&caller, before);
     }
 
     /// Agent owner updates the model label (informational; shown on the board).
     pub fn set_model(&mut self, agent: AccountId, model: String) {
+        require!(model.len() <= MAX_MODEL_LEN, "model is too long");
         let caller = env::predecessor_account_id();
-        let p = self.agents.get_mut(&agent).expect("unknown agent");
-        require!(p.owner == caller, "only the agent's owner can set the model");
-        p.model = model;
+        let before = env::storage_usage();
+        {
+            let p = self.agents.get_mut(&agent).expect("unknown agent");
+            require!(p.owner == caller, "only the agent's owner can set the model");
+            p.model = model;
+        }
+        self.charge_payer(&caller, before);
     }
 
     /// Agent owner sets the asking price.
@@ -613,8 +792,11 @@ impl AgentHub {
     ) -> Cert {
         self.assert_owner();
         require!((1..=3).contains(&level), "level must be 1..=3");
-        require!(!skill.contains(':'), "skill may not contain ':'");
+        require!(!skill.is_empty() && skill.len() <= MAX_SKILL_LEN && !skill.contains(':'), "bad skill");
+        require!(score_uri.len() <= MAX_SCORE_URI, "score_uri is too long");
         require!(self.agents.get(&agent).is_some(), "unknown agent");
+        let payer = env::predecessor_account_id();
+        let before = env::storage_usage();
 
         let mut certs = self.certs.get(&agent).cloned().unwrap_or_default();
         let round = certs.iter().filter(|c| c.skill == skill).count() + 1;
@@ -635,6 +817,7 @@ impl AgentHub {
             r#"EVENT_JSON:{{"standard":"nep171","version":"1.1.0","event":"nft_mint","data":[{{"owner_id":"{}","token_ids":["{}"]}}]}}"#,
             agent, cert.token_id
         ));
+        self.charge_payer(&payer, before);
         cert
     }
 
@@ -642,20 +825,26 @@ impl AgentHub {
     /// approval falling below threshold.
     pub fn revoke_cert(&mut self, agent: AccountId, token_id: String, reason: Option<String>) {
         self.assert_owner();
+        let payer = env::predecessor_account_id();
+        let before = env::storage_usage();
         let mut certs = self.certs.get(&agent).cloned().unwrap_or_default();
         let gone = certs.iter().find(|c| c.token_id == token_id).cloned().expect("cert not found");
         certs.retain(|c| c.token_id != token_id);
         self.certs.insert(agent.clone(), certs);
         let mut revs = self.revocations.get(&agent).cloned().unwrap_or_default();
         revs.push(Revocation {
-            token_id: token_id.clone(), skill: gone.skill, level: gone.level,
+            token_id: token_id.clone(), skill: gone.skill.clone(), level: gone.level,
             revoked_at: env::block_timestamp(), reason: reason.unwrap_or_default(),
         });
         self.revocations.insert(agent.clone(), revs);
+        let mut floor = self.seal_floor.get(&agent).cloned().unwrap_or_default();
+        floor.push((gone.skill, gone.issued_at));
+        self.seal_floor.insert(agent.clone(), floor);
         env::log_str(&format!(
             r#"EVENT_JSON:{{"standard":"nep171","version":"1.1.0","event":"nft_burn","data":[{{"owner_id":"{}","token_ids":["{}"]}}]}}"#,
             agent, token_id
         ));
+        self.charge_payer(&payer, before);
     }
 
     pub fn get_certs(&self, agent: AccountId) -> Vec<Cert> {
@@ -666,18 +855,21 @@ impl AgentHub {
         self.revocations.get(&agent).cloned().unwrap_or_default()
     }
 
-    /// The agent's *current* seal for `skill`: the most recently issued unexpired cert.
-    /// Older certs stay on record as history but no longer gate work — a re-trial
-    /// replaces the seal, it never stacks on top of a better earlier result.
+    /// The agent's *current* seal for `skill`: the newest cert, if it is still valid.
+    /// Burning that seal does not fall back to an older one. Older certs stay on the
+    /// record as history and do not gate work.
     pub fn current_cert(&self, agent: AccountId, skill: String) -> Option<Cert> {
         let now = env::block_timestamp();
-        self.certs.get(&agent).and_then(|certs| {
-            certs
-                .iter()
-                .filter(|c| c.skill == skill && c.expires_at > now)
-                .max_by_key(|c| c.issued_at)
-                .cloned()
-        })
+        let newest = self.certs.get(&agent).and_then(|certs| {
+            certs.iter().filter(|c| c.skill == skill).max_by_key(|c| c.issued_at).cloned()
+        })?;
+        if newest.expires_at <= now {
+            return None;
+        }
+        let blocked = self.seal_floor.get(&agent).is_some_and(|floors| {
+            floors.iter().any(|(sk, issued)| sk == &skill && newest.issued_at <= *issued)
+        });
+        if blocked { None } else { Some(newest) }
     }
 
     /// True if `agent`'s current seal for `skill` is at >= `min_level`.
@@ -740,19 +932,24 @@ impl AgentHub {
         // Panicking here makes the token contract's ft_resolve_transfer return the funds to the sender.
         require!(!self.paused, "hub is paused: no new contracts");
         require!(amount.0 > 0, "budget must be > 0");
+        require!(amount.0 >= MIN_JOB_BUDGET, "budget below minimum");
         let post: PostJobMsg = serde_json::from_str(&msg).expect("bad msg: expected {skill,min_level,spec_uri}");
         require!((1..=3).contains(&post.min_level), "min_level must be 1..=3");
+        require!(!post.skill.is_empty() && post.skill.len() <= MAX_SKILL_LEN && !post.skill.contains(':'), "bad skill");
+        require!(!post.spec_uri.is_empty() && post.spec_uri.len() <= MAX_SPEC_URI, "spec_uri is too long");
         let min_rank = post.min_rank.unwrap_or(0);
         require!(min_rank <= 3, "min_rank must be 0..=3");
         let review_days = post.review_days.unwrap_or(5);
         require!((1..=30).contains(&review_days), "review_days must be 1..=30");
+        let accept_days = post.accept_days.unwrap_or(3);
+        require!((1..=30).contains(&accept_days), "accept_days must be 1..=30");
 
         let id = self.next_job_id;
         self.next_job_id += 1;
         let now = env::block_timestamp();
         let job = Job {
             id,
-            client: sender_id,
+            client: sender_id.clone(),
             skill: post.skill,
             min_level: post.min_level,
             budget: amount,
@@ -773,9 +970,15 @@ impl AgentHub {
             member_bps: None,
             refund: RefundStatus::None,
             refund_amount: U128(0),
+            accept_window_ns: accept_days as u64 * NS_PER_DAY,
+            accepted_at: None,
+            refund_attempt: 0,
+            refund_started_at: None,
         };
+        let before = env::storage_usage();
         self.jobs.insert(id, job);
         self.escrowed += amount.0;
+        self.charge_payer(&sender_id, before);
         self.log_job(id, "job_posted");
         PromiseOrValue::Value(U128(0)) // keep the whole amount
     }
@@ -799,6 +1002,7 @@ impl AgentHub {
         let job = self.jobs.get_mut(&job_id).unwrap();
         job.agent = Some(agent);
         job.status = JobStatus::Accepted;
+        job.accepted_at = Some(env::block_timestamp());
         job.updated_at = env::block_timestamp();
         self.log_job(job_id, "job_accepted");
     }
@@ -808,22 +1012,39 @@ impl AgentHub {
     /// one fails the call: the contract will not accept unverified work.
     pub fn submit(&mut self, job_id: JobId, output_uri: String, proof: Option<ExecutionProof>) {
         require!(!self.paused, "hub is paused");
+        require!(output_uri.len() <= MAX_OUTPUT_URI, "output_uri is too long");
         let agent = env::predecessor_account_id();
-        if let Some(p) = &proof {
-            let signer = Self::recover_signer(p);
-            require!(signer == normalize_hex(&p.signing_address), "proof: signature does not recover to signing_address");
-            require!(self.trusted_signers.contains_key(&signer), "proof: signer is not an attested TEE registered on this hub");
+        {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(job.status == JobStatus::Accepted, "job is not accepted");
+            require!(job.agent.as_ref() == Some(&agent), "not this job's agent");
+            require!(!job.require_proof || proof.is_some(), "this job requires a TEE execution proof");
         }
-        let job = self.jobs.get_mut(&job_id).expect("no such job");
-        require!(job.status == JobStatus::Accepted, "job is not accepted");
-        require!(job.agent.as_ref() == Some(&agent), "not this job's agent");
-        require!(!job.require_proof || proof.is_some(), "this job requires a TEE execution proof");
-        job.proof = proof;
+        let stored = proof.map(|p| self.accept_proof(job_id, &output_uri, p));
+        let job = self.jobs.get_mut(&job_id).unwrap();
+        job.proof = stored;
         job.output_uri = Some(output_uri);
         job.status = JobStatus::Submitted;
         job.submitted_at = Some(env::block_timestamp());
         job.updated_at = env::block_timestamp();
         self.log_job(job_id, "job_submitted");
+    }
+
+    /// Accept window elapsed and the member never submitted: send the escrow back to the client.
+    pub fn release_expired_acceptance(&mut self, job_id: JobId) -> Promise {
+        let (client, budget) = {
+            let job = self.jobs.get_mut(&job_id).expect("no such job");
+            require!(job.status == JobStatus::Accepted, "job is not accepted");
+            let started = job.accepted_at.expect("no accept time");
+            require!(env::block_timestamp() >= started + job.accept_window_ns, "accept window still open");
+            require!(job.refund == RefundStatus::None, "refund already in progress");
+            job.status = JobStatus::Expired;
+            job.updated_at = env::block_timestamp();
+            (job.client.clone(), job.budget.0)
+        };
+        self.escrowed -= budget;
+        self.log_job(job_id, "job_accept_expired");
+        self.start_refund(job_id, client, budget)
     }
 
     /// Client approves: budget minus fee is credited to the agent's in-contract
@@ -835,6 +1056,8 @@ impl AgentHub {
         let who = env::predecessor_account_id();
         require!(who == job.client || job.agent.as_ref() == Some(&who), "only the client or the assigned member may post");
         require!(matches!(job.status, JobStatus::Open | JobStatus::Accepted | JobStatus::Submitted | JobStatus::Disputed), "contract is settled");
+        // Notes are capped (20 × 500). The member's key cannot call storage_deposit, so the hub
+        // covers this small record. Job text and registration are what callers pay for.
         self.push_note(job_id, who, text);
     }
 
@@ -966,18 +1189,20 @@ impl AgentHub {
         };
         let member_share = budget * member_bps as u128 / 10_000;
         let client_share = budget - member_share;
-        let fee = member_share * fee_bps as u128 / 10_000;
+        let fee = Self::guild_fee(member_share, fee_bps);
         let payout = member_share - fee;
 
         self.escrowed -= budget;
         self.credit(&agent, payout);
         self.fees += fee;
 
+        let self_deal = self.agents.get(&agent).expect("agent vanished").owner == client;
         let profile = self.agents.get_mut(&agent).expect("agent vanished");
         profile.jobs_completed += 1;
         if member_bps >= 5_000 { profile.jobs_approved += 1; } else { profile.jobs_rejected += 1; }
         if let Some(r) = rating { profile.rating_sum += r as u32; profile.rating_count += 1; }
         profile.total_earned = U128(profile.total_earned.0 + payout);
+        Self::add_rank(profile, self_deal, member_bps, rating);
         self.log_job(job_id, event);
 
         if client_share > 0 {
@@ -989,22 +1214,49 @@ impl AgentHub {
 
     /// Marks the job RefundPending and sends the tokens. `on_refund` records the outcome.
     fn start_refund(&mut self, job_id: JobId, to: AccountId, amount: u128) -> Promise {
-        {
+        let attempt = {
             let job = self.jobs.get_mut(&job_id).unwrap();
             job.refund = RefundStatus::Pending;
             job.refund_amount = U128(amount);
-        }
+            job.refund_attempt = job.refund_attempt.saturating_add(1);
+            job.refund_started_at = Some(env::block_timestamp());
+            job.refund_attempt
+        };
         self.in_flight += amount;
         self.ft_transfer(to, amount, format!("refund job {}", job_id)).then(
-            Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_refund(job_id),
+            Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_refund(job_id, attempt),
+        )
+    }
+
+    /// The callback for a pending refund never arrived. Send it again after a day.
+    /// The amount is already in `in_flight`, so this does not account it a second time.
+    /// A callback from the older attempt is ignored. If that older transfer had actually
+    /// landed, sending this one pays the client twice — only use it when the refund is stuck.
+    pub fn retry_pending_refund(&mut self, job_id: JobId) -> Promise {
+        let who = env::predecessor_account_id();
+        let (client, amount, attempt) = {
+            let job = self.jobs.get_mut(&job_id).expect("no such job");
+            require!(who == job.client || who == self.owner, "client or owner only");
+            require!(job.refund == RefundStatus::Pending, "no pending refund on this job");
+            let started = job.refund_started_at.expect("no refund start");
+            require!(env::block_timestamp() >= started + PENDING_REFUND_TIMEOUT_NS, "pending refund is still in flight");
+            job.refund_attempt = job.refund_attempt.saturating_add(1);
+            job.refund_started_at = Some(env::block_timestamp());
+            (job.client.clone(), job.refund_amount.0, job.refund_attempt)
+        };
+        self.ft_transfer(client, amount, format!("refund job {} retry", job_id)).then(
+            Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_refund(job_id, attempt),
         )
     }
 
     #[private]
-    pub fn on_refund(&mut self, job_id: JobId, #[callback_result] result: Result<(), PromiseError>) -> bool {
+    pub fn on_refund(&mut self, job_id: JobId, attempt: u32, #[callback_result] result: Result<(), PromiseError>) -> bool {
         let amount = {
             let job = self.jobs.get(&job_id).expect("no such job");
-            require!(job.refund == RefundStatus::Pending, "no refund pending");
+            if job.refund != RefundStatus::Pending || job.refund_attempt != attempt {
+                env::log_str("stale refund callback ignored");
+                return true;
+            }
             job.refund_amount.0
         };
         self.in_flight -= amount;
@@ -1096,10 +1348,15 @@ impl AgentHub {
         withdraw_allowlist: Vec<AccountId>,
     ) {
         let caller = env::predecessor_account_id();
-        let profile = self.agents.get_mut(&agent).expect("unknown agent");
-        require!(profile.owner == caller, "only the agent's owner can set policy");
-        profile.withdraw_cap_per_day = withdraw_cap_per_day;
-        profile.withdraw_allowlist = withdraw_allowlist;
+        require!(withdraw_allowlist.len() <= MAX_ALLOWLIST, "allowlist is too long");
+        let before = env::storage_usage();
+        {
+            let profile = self.agents.get_mut(&agent).expect("unknown agent");
+            require!(profile.owner == caller, "only the agent's owner can set policy");
+            profile.withdraw_cap_per_day = withdraw_cap_per_day;
+            profile.withdraw_allowlist = withdraw_allowlist;
+        }
+        self.charge_payer(&caller, before);
     }
 
     /// Owner withdraws accrued guild fees. Debited first; restored by the callback on failure.
@@ -1184,7 +1441,9 @@ impl AgentHub {
         self.pending_upgrade = None;
         env::storage_remove(UPGRADE_CODE_KEY);
         env::log_str(&format!("applying upgrade sha256 {}", hex_encode(&hash)));
-        Promise::new(env::current_account_id()).deploy_contract(code)
+        Promise::new(env::current_account_id()).deploy_contract(code).then(
+            Self::ext(env::current_account_id()).with_static_gas(GAS_MIGRATE).migrate(),
+        )
     }
 
     /// The delay can be lengthened at any time; shortening it takes an upgrade, i.e. the delay itself.
@@ -1217,9 +1476,13 @@ impl AgentHub {
     /// off-chain (NEAR AI Cloud attestation report + NVIDIA/Intel evidence).
     pub fn add_trusted_signer(&mut self, address: String, label: String) {
         self.assert_owner();
+        require!(label.len() <= MAX_SIGNER_LABEL, "label is too long");
         let a = normalize_hex(&address);
         require!(a.len() == 40, "address must be 20 bytes hex");
+        let payer = env::predecessor_account_id();
+        let before = env::storage_usage();
         self.trusted_signers.insert(a, label);
+        self.charge_payer(&payer, before);
     }
 
     pub fn remove_trusted_signer(&mut self, address: String) {
@@ -1231,9 +1494,17 @@ impl AgentHub {
         self.trusted_signers.iter().map(|(k, v)| (format!("0x{}", k), v.clone())).collect()
     }
 
-    /// Pure check: does this proof recover to its claimed signer, and is that signer trusted?
-    pub fn verify_proof(&self, proof: ExecutionProof) -> (bool, String) {
-        let signer = Self::recover_signer(&proof);
+    /// Pure check: signature binds `job_id` and `output_hash`, recovers to a trusted signer, and is unused.
+    pub fn verify_proof(&self, proof: ExecutionProof, job_id: JobId, output_hash: String) -> (bool, String) {
+        let output_hash = normalize_hex(&output_hash);
+        if output_hash.len() != 64 {
+            return (false, "output hash must be 64 hex chars".into());
+        }
+        let sig = normalize_hex(&proof.signature);
+        if self.used_proofs.contains_key(&sig) {
+            return (false, "proof already used".into());
+        }
+        let signer = Self::recover_signer(&proof, job_id, &output_hash);
         if signer != normalize_hex(&proof.signing_address) {
             return (false, "signature does not recover to signing_address".into());
         }
@@ -1272,15 +1543,15 @@ impl AgentHub {
     // ---------------------------------------------------------------- Helpers
 
     pub(crate) fn rank_of(p: &AgentProfile) -> Rank {
-        let approved = p.jobs_approved;
-        let pct = if p.jobs_completed > 0 { approved * 100 / p.jobs_completed } else { 0 };
-        let avg10 = if p.rating_count > 0 { p.rating_sum * 10 / p.rating_count } else { 0 };
+        let approved = p.rank_jobs_approved;
+        let pct = if p.rank_jobs_completed > 0 { approved * 100 / p.rank_jobs_completed } else { 0 };
+        let avg10 = if p.rank_rating_count > 0 { p.rank_rating_sum * 10 / p.rank_rating_count } else { 0 };
         let rank: u8 = if approved >= 100 && pct >= 97 && avg10 >= 47 { 3 }
             else if approved >= 25 && pct >= 95 && avg10 >= 45 { 2 }
-            else if approved >= 5 && pct >= 90 { 1 }
+            else if approved >= 5 && pct >= 90 && avg10 >= JOURNEYMAN_AVG10 { 1 }
             else { 0 };
         let next = match rank {
-            0 => Some(format!("Journeyman: {} more approved jobs, 90%+ approval", 5u32.saturating_sub(approved))),
+            0 => Some(format!("Journeyman: {} more approved jobs, 90%+ approval, 4.0+ rating", 5u32.saturating_sub(approved))),
             1 => Some(format!("Master: {} more approved jobs, 95%+ approval, 4.5+ rating", 25u32.saturating_sub(approved))),
             2 => Some(format!("Legend: {} more approved jobs, 97%+ approval, 4.7+ rating", 100u32.saturating_sub(approved))),
             _ => None,
@@ -1288,13 +1559,36 @@ impl AgentHub {
         Rank { rank, name: RANK_NAMES[rank as usize].into(), jobs_approved: approved, approval_pct: pct, avg_rating_x10: avg10, next }
     }
 
-    /// EIP-191 recovery of the TEE signer: keccak256("\x19Ethereum Signed Message:\n" + len + text),
-    /// ecrecover → keccak256(pubkey)[12..] → lowercase hex (no 0x).
-    fn recover_signer(p: &ExecutionProof) -> String {
+    /// Self-deals and silent auto-approvals pay out but do not move rank.
+    /// An unrated loss (a dispute the member mostly loses) does lower the approval rate.
+    fn add_rank(profile: &mut AgentProfile, self_deal: bool, member_bps: u16, rating: Option<u8>) {
+        if self_deal { return; }
+        match rating {
+            Some(r) => {
+                profile.rank_jobs_completed += 1;
+                if member_bps >= FALLBACK_MEMBER_BPS { profile.rank_jobs_approved += 1; }
+                profile.rank_rating_sum += r as u32;
+                profile.rank_rating_count += 1;
+            }
+            None if member_bps >= FALLBACK_MEMBER_BPS => {}
+            None => { profile.rank_jobs_completed += 1; }
+        }
+    }
+
+    /// Fee in token units, rounded up so a tiny job cannot zero it out.
+    fn guild_fee(member_share: u128, fee_bps: u16) -> u128 {
+        if member_share == 0 || fee_bps == 0 { return 0; }
+        let fee = member_share.checked_mul(fee_bps as u128).expect("fee overflow").div_ceil(10_000);
+        require!(fee <= member_share, "fee exceeds member share");
+        fee
+    }
+
+    /// EIP-191 recovery. The signed text binds the job id and the output hash.
+    fn recover_signer(p: &ExecutionProof, job_id: JobId, output_hash: &str) -> String {
         let text = if p.signature_kind == "provider_tee" {
-            format!("{}:{}:{}", p.model, p.request_hash, p.response_hash)
+            format!("job:{job_id}:out:{output_hash}:{}:{}:{}", p.model, p.request_hash, p.response_hash)
         } else {
-            format!("{}:{}", p.request_hash, p.response_hash)
+            format!("job:{job_id}:out:{output_hash}:{}:{}", p.request_hash, p.response_hash)
         };
         let mut msg = format!("\x19Ethereum Signed Message:\n{}", text.len()).into_bytes();
         msg.extend_from_slice(text.as_bytes());
@@ -1316,6 +1610,46 @@ impl AgentHub {
         let bal = self.balances.get(account).copied().unwrap_or(0);
         self.balances.insert(account.clone(), bal + amount);
         self.liabilities += amount;
+    }
+
+    /// Caller prepays NEAR that stays on the hub and pays for the storage their records add.
+    #[payable]
+    pub fn storage_deposit(&mut self) {
+        let amount = env::attached_deposit().as_yoctonear();
+        require!(amount > 0, "attach NEAR for storage");
+        let who = env::predecessor_account_id();
+        let before = env::storage_usage();
+        let cur = self.storage_prepaid.get(&who).copied().unwrap_or(0);
+        self.storage_prepaid.insert(who.clone(), cur.saturating_add(amount));
+        self.charge_payer(&who, before);
+    }
+
+    pub fn get_storage_balance(&self, account: AccountId) -> U128 {
+        U128(self.storage_prepaid.get(&account).copied().unwrap_or(0))
+    }
+
+    fn charge_payer(&mut self, payer: &AccountId, before: u64) {
+        let after = env::storage_usage();
+        if after <= before { return; }
+        let cost = env::storage_byte_cost().as_yoctonear().saturating_mul((after - before) as u128);
+        let cur = self.storage_prepaid.get(payer).copied().unwrap_or(0);
+        require!(cur >= cost, "insufficient storage deposit; call storage_deposit");
+        self.storage_prepaid.insert(payer.clone(), cur - cost);
+    }
+
+    fn accept_proof(&mut self, job_id: JobId, output_uri: &str, p: ExecutionProof) -> ExecutionProof {
+        require!(p.model.len() <= MAX_PROOF_FIELD && p.chat_id.len() <= MAX_PROOF_FIELD, "proof field is too long");
+        require!(p.request_hash.len() <= MAX_PROOF_FIELD && p.response_hash.len() <= MAX_PROOF_FIELD, "proof field is too long");
+        require!(p.signature_kind.len() <= 32 && p.signing_address.len() <= 44, "proof field is too long");
+        let output_hash = output_hash_of(output_uri);
+        let sig = normalize_hex(&p.signature);
+        require!(sig.len() == 130, "proof: signature must be 65 bytes");
+        require!(!self.used_proofs.contains_key(&sig), "proof already used");
+        let signer = Self::recover_signer(&p, job_id, &output_hash);
+        require!(signer == normalize_hex(&p.signing_address), "proof: signature does not recover to signing_address");
+        require!(self.trusted_signers.contains_key(&signer), "proof: signer is not an attested TEE registered on this hub");
+        self.used_proofs.insert(sig, job_id);
+        p
     }
 
     fn ft_transfer(&self, receiver: AccountId, amount: u128, memo: String) -> Promise {
@@ -1366,6 +1700,15 @@ impl AgentHub {
 
 fn normalize_hex(s: &str) -> String {
     s.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase()
+}
+
+fn output_hash_of(uri: &str) -> String {
+    let Some((_, hash)) = uri.rsplit_once("#sha256=") else {
+        env::panic_str("output_uri must include #sha256=<64 hex>");
+    };
+    let h = normalize_hex(hash);
+    require!(h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()), "output hash must be 64 hex chars");
+    h
 }
 
 fn hex_decode(s: &str) -> Vec<u8> {
@@ -1428,8 +1771,13 @@ mod tests {
                 rate: U128(0),
                 display_name: "Ledger Hand".into(),
                 rating_count: 0,
+                rank_jobs_completed: 0, rank_jobs_approved: 0, rank_rating_sum: 0, rank_rating_count: 0,
             },
         );
+        // Tests don't go through storage_deposit. Credit the accounts that write records.
+        for id in [accounts(0), accounts(1), accounts(2), accounts(5), agent()] {
+            c.storage_prepaid.insert(id, 50 * 10u128.pow(24));
+        }
         c
     }
 
@@ -1524,15 +1872,17 @@ mod tests {
         assert!(c.is_certified(agent(), "document-extraction".into(), 1));
         assert_eq!(c.current_cert(agent(), "document-extraction".into()).unwrap().level, 1);
         assert_eq!(c.get_certs(agent()).len(), 2, "history is kept");
-        // Revoking the current seal falls back to nothing, not to the old Gold.
+        // Burning the current (Bronze) seal must not restore the older Gold.
         testing_env!(ctx(accounts(0)).block_timestamp(3).build());
-        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into(), None);
         c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:2".into(), Some("failed re-trial".into()));
+        assert!(c.current_cert(agent(), "document-extraction".into()).is_none(), "older gold must stay history");
         assert!(!c.is_certified(agent(), "document-extraction".into(), 1));
+        assert_eq!(c.get_certs(agent()).len(), 1, "the gold seal is still on the record");
+        assert_eq!(c.get_certs(agent())[0].level, 3);
         let revs = c.get_revocations(agent());
-        assert_eq!(revs.len(), 2);
-        assert_eq!(revs[1].reason, "failed re-trial");
-        assert_eq!(revs[1].level, 1);
+        assert_eq!(revs.len(), 1);
+        assert_eq!(revs[0].reason, "failed re-trial");
+        assert_eq!(revs[0].level, 1);
     }
 
     #[test]
@@ -1661,16 +2011,21 @@ mod tests {
         let mut c = setup();
         let p = c.agents.get_mut(&agent()).unwrap();
         assert_eq!(AgentHub::rank_of(p).name, "Apprentice");
-        p.jobs_completed = 5; p.jobs_approved = 5; p.rating_sum = 20; p.rating_count = 5;
+        p.rank_jobs_completed = 5; p.rank_jobs_approved = 5; p.rank_rating_sum = 20; p.rank_rating_count = 5;
         assert_eq!(AgentHub::rank_of(p).name, "Journeyman");
-        p.jobs_completed = 26; p.jobs_approved = 25; p.rating_sum = 115; p.rating_count = 25; // 4.6 avg, 96%
+        // Five approvals with no real rating are not Journeyman.
+        p.rank_rating_sum = 0; p.rank_rating_count = 0;
+        assert_eq!(AgentHub::rank_of(p).rank, 0);
+        p.rank_rating_sum = 15; p.rank_rating_count = 5; // 3.0 avg
+        assert_eq!(AgentHub::rank_of(p).rank, 0, "Journeyman needs a 4.0 rating");
+        p.rank_rating_sum = 20; p.rank_rating_count = 5;
+        p.rank_jobs_completed = 26; p.rank_jobs_approved = 25; p.rank_rating_sum = 115; p.rank_rating_count = 25; // 4.6 avg, 96%
         assert_eq!(AgentHub::rank_of(p).name, "Master");
-        p.jobs_completed = 100; p.jobs_approved = 100; p.rating_sum = 480; p.rating_count = 100;
+        p.rank_jobs_completed = 100; p.rank_jobs_approved = 100; p.rank_rating_sum = 480; p.rank_rating_count = 100;
         assert_eq!(AgentHub::rank_of(p).name, "Legend");
-        // Unrated auto-approvals count as approved work but do not move the average.
-        p.jobs_completed = 120; p.jobs_approved = 120;
+        // Unrated approvals are not in the rank counters, so they do not move the average.
         assert_eq!(AgentHub::rank_of(p).avg_rating_x10, 48);
-        p.jobs_completed = 10; p.jobs_approved = 8; p.rating_sum = 40; p.rating_count = 8; // 80%: back to Apprentice
+        p.rank_jobs_completed = 10; p.rank_jobs_approved = 8; p.rank_rating_sum = 40; p.rank_rating_count = 8; // 80%
         assert_eq!(AgentHub::rank_of(p).rank, 0);
     }
 
@@ -1723,6 +2078,8 @@ mod tests {
         assert_eq!(j.rating, None);
         let p = c.get_agent(agent()).unwrap();
         assert_eq!((p.jobs_approved, p.rating_count), (1, 0));
+        assert_eq!(p.rank_jobs_approved, 0, "a silent auto-approval does not move rank");
+        assert_eq!(AgentHub::rank_of(&p).rank, 0);
         assert_eq!(c.get_balance(agent()).0, 940_000);
         check(&c, 1_000_000);
     }
@@ -1767,7 +2124,7 @@ mod tests {
         assert_eq!(c.get_accounting().fees.0, 18_000);
         check(&c, 1_000_000);
         // refund lands
-        c.on_refund(id, Ok(()));
+        c.on_refund(id, 1, Ok(()));
         assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Refunded);
         check(&c, 300_000);
         let p = c.get_agent(agent()).unwrap();
@@ -1802,7 +2159,7 @@ mod tests {
         testing_env!(ctx(accounts(5)).block_timestamp(t).build());
         c.claim_dispute_fallback(id);
         let j = c.get_job(id).unwrap();
-        assert_eq!((j.status.clone(), j.member_bps, j.refund_amount.0), (JobStatus::Resolved, Some(5_000), 500_000));
+        assert_eq!((j.status, j.member_bps, j.refund_amount.0), (JobStatus::Resolved, Some(5_000), 500_000));
         assert_eq!(c.get_balance(agent()).0, 470_000);
         check(&c, 1_000_000);
     }
@@ -1816,20 +2173,22 @@ mod tests {
         assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Pending);
         check(&c, 1_000_000);
         // client not registered on the token: ft_transfer fails
-        c.on_refund(id, Err(PromiseError::Failed));
+        c.on_refund(id, 1, Err(PromiseError::Failed));
         let j = c.get_job(id).unwrap();
-        assert_eq!((j.status.clone(), j.refund.clone(), j.refund_amount.0), (JobStatus::Cancelled, RefundStatus::Failed, 1_000_000));
+        assert_eq!((j.status, j.refund, j.refund_amount.0), (JobStatus::Cancelled, RefundStatus::Failed, 1_000_000));
         assert_eq!(c.get_accounting().refunds_owed.0, 1_000_000);
         check(&c, 1_000_000);
         // settling or cancelling during a failed/pending refund is impossible
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.cancel(id) })).is_err());
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.on_refund(id, Ok(())))).is_err(), "callback cannot be replayed");
+        c.on_refund(id, 1, Ok(())); // late callback for the failed attempt is ignored
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Failed);
+        assert_eq!(c.get_accounting().refunds_owed.0, 1_000_000);
         // retry succeeds
         testing_env!(ctx(accounts(2)).build());
         c.retry_refund(id);
         assert_eq!(c.get_accounting().refunds_owed.0, 0);
         check(&c, 1_000_000);
-        c.on_refund(id, Ok(()));
+        c.on_refund(id, 2, Ok(()));
         assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Refunded);
         check(&c, 0);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.retry_refund(id) })).is_err(), "no double refund");
@@ -1928,8 +2287,9 @@ mod tests {
 
     // A real EIP-191 signature produced off-chain (secp256k1 test key) over
     // "m:aa:bb" so the on-chain recovery path is exercised end to end.
-    const PROOF_SIGNER: &str = "19e7e376e7c213b7e7e7e46cc70a5dd086daff2a";
-    const PROOF_SIG: &str = "f1c3318cac08d7c1ec13de6d99f77139ee4349a6d519bbb3f4e9a9b6f29b3ee547e183ae5e033c448ee88a205c1f20c3df9c240448948f03f93a4d0819e5bc2d1c";
+    const PROOF_SIGNER: &str = "bb3c746370658caccd39f2bf50dc2d31246de4ba";
+    const PROOF_SIG: &str = "dd4e9c454ebfe15bf31160292dbab89b2a647a0ff54d1354a5581fe3799cdc3b1025cd9b1564920c778fed3efe996c849231df6198814c10c89f9bf5eeab96a51c";
+    const PROOF_OUT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn proof() -> ExecutionProof {
         ExecutionProof {
@@ -1942,14 +2302,16 @@ mod tests {
     fn proof_recovers_and_requires_trust() {
         let mut c = setup();
         testing_env!(ctx(accounts(0)).build());
-        let (ok, why) = c.verify_proof(proof());
+        let (ok, why) = c.verify_proof(proof(), 0, PROOF_OUT.into());
         assert!(!ok, "{}", why);
         c.add_trusted_signer(PROOF_SIGNER.into(), "test enclave".into());
-        let (ok, why) = c.verify_proof(proof());
+        let (ok, why) = c.verify_proof(proof(), 0, PROOF_OUT.into());
         assert!(ok, "{}", why);
         let mut bad = proof();
         bad.response_hash = "cc".into();
-        assert!(!c.verify_proof(bad).0, "tampered hash must fail");
+        assert!(!c.verify_proof(bad, 0, PROOF_OUT.into()).0, "tampered hash must fail");
+        assert!(!c.verify_proof(proof(), 1, PROOF_OUT.into()).0, "signature is bound to the job id");
+        assert!(!c.verify_proof(proof(), 0, "a".repeat(64)).0, "signature is bound to the output hash");
     }
 
     #[test]
@@ -1987,5 +2349,160 @@ mod tests {
         assert_eq!(c.get_balance(agent()).0, 0);
         assert_eq!(c.list_jobs(Some(JobStatus::Disputed), None, None).len(), 1);
         check(&c, 2_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "budget below minimum")]
+    fn tiny_budget_is_rejected() {
+        let mut c = setup();
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(16), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s"}"#.into());
+    }
+
+    #[test]
+    #[should_panic(expected = "spec_uri is too long")]
+    fn spec_uri_is_capped() {
+        let mut c = setup();
+        testing_env!(ctx(token()).build());
+        let spec = "s".repeat(300);
+        c.ft_on_transfer(accounts(2), U128(MIN_JOB_BUDGET), format!(r#"{{"skill":"document-extraction","min_level":1,"spec_uri":"{}"}}"#, spec));
+    }
+
+    #[test]
+    fn fee_rounds_up() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_001, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.approve(id, 5);
+        // ceil(1_000_001 * 600 / 10_000) = 60_001, so the member is paid 940_000.
+        assert_eq!(c.get_balance(agent()).0, 940_000);
+        assert_eq!(c.get_accounting().fees.0, 60_001);
+        check(&c, 1_000_001);
+    }
+
+    #[test]
+    fn self_deal_pays_but_does_not_raise_rank() {
+        let mut c = setup(); gold(&mut c);
+        // accounts(1) owns the agent.
+        let id = post_job(&mut c, accounts(1), MIN_JOB_BUDGET, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(1)).build());
+        c.approve(id, 5);
+        let p = c.get_agent(agent()).unwrap();
+        assert_eq!(p.jobs_approved, 1, "the work record still shows the job");
+        assert_eq!(p.rank_jobs_approved, 0);
+        assert_eq!(AgentHub::rank_of(&p).name, "Apprentice");
+        assert_eq!(c.get_balance(agent()).0, 940_000);
+    }
+
+    #[test]
+    fn accept_window_returns_the_escrow() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), MIN_JOB_BUDGET, 1);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        let deadline = 1_000 * NS_PER_DAY + DEFAULT_ACCEPT_WINDOW_NS;
+        testing_env!(ctx(accounts(5)).block_timestamp(deadline - 1).build());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.release_expired_acceptance(id))).is_err());
+        assert_eq!(c.get_job(id).unwrap().status, JobStatus::Accepted);
+        testing_env!(ctx(accounts(5)).block_timestamp(deadline).build());
+        c.release_expired_acceptance(id);
+        let j = c.get_job(id).unwrap();
+        assert_eq!(j.status, JobStatus::Expired);
+        assert_eq!(j.refund, RefundStatus::Pending);
+        assert_eq!(c.get_accounting().escrowed.0, 0);
+        check(&c, MIN_JOB_BUDGET);
+        c.on_refund(id, 1, Ok(()));
+        check(&c, 0);
+    }
+
+    #[test]
+    fn pending_refund_can_be_sent_again_after_a_day() {
+        let mut c = setup();
+        let id = post_job(&mut c, accounts(2), MIN_JOB_BUDGET, 1);
+        testing_env!(ctx(accounts(2)).build());
+        c.cancel(id);
+        assert_eq!(c.get_accounting().in_flight.0, MIN_JOB_BUDGET);
+        testing_env!(ctx(accounts(2)).block_timestamp(1_000 * NS_PER_DAY + PENDING_REFUND_TIMEOUT_NS - 1).build());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.retry_pending_refund(id))).is_err());
+        testing_env!(ctx(accounts(2)).block_timestamp(1_000 * NS_PER_DAY + PENDING_REFUND_TIMEOUT_NS).build());
+        c.retry_pending_refund(id);
+        assert_eq!(c.get_accounting().in_flight.0, MIN_JOB_BUDGET, "the amount was already in flight");
+        assert_eq!(c.get_job(id).unwrap().refund_attempt, 2);
+        c.on_refund(id, 1, Ok(())); // the first attempt is stale
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Pending);
+        c.on_refund(id, 2, Ok(()));
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Refunded);
+        check(&c, 0);
+    }
+
+    #[test]
+    fn proof_is_bound_to_the_job_and_cannot_be_replayed() {
+        let mut c = setup(); gold(&mut c);
+        testing_env!(ctx(accounts(0)).build());
+        c.add_trusted_signer(PROOF_SIGNER.into(), "test enclave".into());
+        let uri = format!("out/job-0.json#sha256={}", PROOF_OUT);
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(MIN_JOB_BUDGET), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s"}"#.into());
+        testing_env!(ctx(agent()).build());
+        c.accept_job(0);
+        c.submit(0, uri.clone(), Some(proof()));
+        assert!(c.get_job(0).unwrap().proof.is_some());
+        // A second job cannot reuse the signature, even with the same file hash.
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(MIN_JOB_BUDGET), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s"}"#.into());
+        testing_env!(ctx(agent()).build());
+        c.accept_job(1);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.submit(1, uri, Some(proof()))));
+        assert!(err.is_err(), "replayed signature must be rejected");
+        assert_eq!(c.get_job(1).unwrap().status, JobStatus::Accepted);
+    }
+
+    #[test]
+    fn migrate_v6_drops_a_self_deal_from_rank_and_keeps_a_real_one() {
+        use near_sdk::env;
+        testing_env!(ctx(hub()).build());
+        let mut old_agents = near_sdk::store::IterableMap::new(b"a".to_vec());
+        old_agents.insert(agent(), migrate::AgentProfile {
+            account: agent(), owner: accounts(1), model: "m".into(), skills: vec!["document-extraction".into()],
+            jobs_completed: 2, jobs_approved: 2, total_earned: U128(0), withdraw_cap_per_day: U128(1),
+            withdraw_allowlist: vec![accounts(1)], created_at: 0, rating_sum: 10, jobs_rejected: 0,
+            rate: U128(0), display_name: "Ledger Hand".into(), rating_count: 2,
+        });
+        let mut old_jobs = near_sdk::store::IterableMap::new(b"j".to_vec());
+        let job = |id, client, rating| migrate::Job {
+            id, client, skill: "document-extraction".into(), min_level: 1, budget: U128(MIN_JOB_BUDGET),
+            spec_uri: "s".into(), agent: Some(agent()), output_uri: None, status: JobStatus::Approved,
+            rating: Some(rating), created_at: 1, updated_at: 2, min_rank: 0, require_proof: false, proof: None,
+            fee_bps: 600, review_window_ns: DEFAULT_REVIEW_WINDOW_NS, submitted_at: Some(1), disputed_at: None,
+            member_bps: Some(10_000), refund: RefundStatus::None, refund_amount: U128(0),
+        };
+        old_jobs.insert(0, job(0, accounts(1), 5)); // owner hired their own agent
+        old_jobs.insert(1, job(1, accounts(2), 5));
+        let old = migrate::State {
+            owner: accounts(0), token: token(), fee_bps: 600, agents: old_agents,
+            certs: near_sdk::store::LookupMap::new(b"c".to_vec()),
+            jobs: old_jobs, next_job_id: 2,
+            balances: near_sdk::store::LookupMap::new(b"b".to_vec()),
+            withdrawn_today: near_sdk::store::LookupMap::new(b"w".to_vec()),
+            trusted_signers: near_sdk::store::IterableMap::new(b"t".to_vec()),
+            revocations: near_sdk::store::LookupMap::new(b"r".to_vec()),
+            notes: near_sdk::store::LookupMap::new(b"n".to_vec()),
+            escrowed: 0, liabilities: 0, fees: 0, in_flight: 0, refunds_owed: 0,
+            pending_owner: None, arbiter: accounts(0), paused: false, upgrade_delay_ns: 1, pending_upgrade: None,
+        };
+        env::state_write(&old);
+        drop(old); // collections flush their values to storage on drop
+        let c = AgentHub::migrate();
+        let p = c.get_agent(agent()).unwrap();
+        assert_eq!(p.jobs_approved, 2, "public record is kept");
+        assert_eq!((p.rank_jobs_approved, p.rank_rating_count), (1, 1), "only the outside client's rating counts");
+        assert_eq!(c.get_job(0).unwrap().accept_window_ns, DEFAULT_ACCEPT_WINDOW_NS);
+        // Running migrate again must not rebuild the world a second time.
+        env::state_write(&c);
+        drop(c);
+        let again = AgentHub::migrate();
+        assert_eq!(again.get_agent(agent()).unwrap().rank_jobs_approved, 1);
     }
 }

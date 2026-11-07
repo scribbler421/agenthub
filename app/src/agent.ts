@@ -5,6 +5,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { agentAccount, call, env, arg, hasFlag, view, txHash, explorerTx, fmtUsdc } from "./near.js";
 import { extractWithProof, PROVIDER, MODEL_NAME } from "./extract.js";
+import { canSignHubProof } from "./nearai.js";
 
 const SKILL = "document-extraction";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -20,6 +21,22 @@ async function work(hub: string, agentId: string): Promise<number> {
     if (job.status === "Open") {
       const ok = await view(hub, "is_certified", { agent: agentId, skill: SKILL, min_level: job.min_level });
       if (!ok) { console.log(`job #${job.id}: needs level ${job.min_level}, skipping`); continue; }
+    }
+    const rank = await view(hub, "get_rank", { agent: agentId });
+    if ((rank?.rank ?? 0) < (job.min_rank ?? 0)) { console.log(`job #${job.id}: needs rank ${job.min_rank}, have ${rank?.rank ?? 0}, skipping`); continue; }
+    if (job.require_proof && !canSignHubProof()) {
+      console.log(`job #${job.id}: requires a signature over the job id and output hash; this runner cannot produce one, skipping`);
+      continue;
+    }
+    // Resolve the spec before accepting. v1: "<path>#sha256=<hash>" in this repo.
+    const [specPath, frag] = String(job.spec_uri).split("#");
+    if (!fs.existsSync(specPath)) { console.log(`job #${job.id}: brief not found at ${specPath}, not accepting`); continue; }
+    const specBytes = fs.readFileSync(specPath);
+    const hash = crypto.createHash("sha256").update(specBytes).digest("hex");
+    if (frag && frag !== `sha256=${hash}`) { console.log(`job #${job.id}: brief hash does not match ${frag}, not accepting`); continue; }
+    const spec = JSON.parse(specBytes.toString("utf8")) as { documents: { id: string; text: string }[] };
+
+    if (job.status === "Open") {
       console.log(`job #${job.id}: ${fmtUsdc(job.budget)} — accepting`);
       const a = await call(agent, hub, "accept_job", { job_id: job.id });
       console.log(`  accepted  ${explorerTx(txHash(a))}`);
@@ -33,16 +50,6 @@ async function work(hub: string, agentId: string): Promise<number> {
     const clientNotes = notes.filter((n) => n.author === job.client).map((n) => n.text);
     if (clientNotes.length) console.log(`  thread: ${clientNotes.length} note(s) from the client`);
     const say = async (text: string) => { try { await call(agent, hub, "post_note", { job_id: job.id, text }); console.log(`  noted: ${text}`); } catch (e: any) { console.log(`  (could not post note: ${String(e.message).slice(0, 80)})`); } };
-
-    // Resolve the spec. v1: "<path>#sha256=<hash>" in this repo.
-    const [specPath, frag] = String(job.spec_uri).split("#");
-    if (!fs.existsSync(specPath)) { await say(`Cannot resolve the brief at ${specPath}. Please re-post it or add a note with a reachable location.`); continue; }
-    const specBytes = fs.readFileSync(specPath);
-    const hash = crypto.createHash("sha256").update(specBytes).digest("hex");
-    if (frag && frag !== `sha256=${hash}`) { await say(`The brief at ${specPath} does not match the hash in the contract (${frag}). Not proceeding until it does.`); continue; }
-    const spec = JSON.parse(specBytes.toString("utf8")) as { documents: { id: string; text: string }[] };
-
-    if (job.require_proof && PROVIDER !== "nearai") { console.log(`job #${job.id}: requires a TEE proof but this agent runs on ${PROVIDER}; skipping`); continue; }
     // Acknowledge the client's notes once, so the client can see they were read before the work started.
     if (clientNotes.length && !notes.some((n) => n.author === agentId)) await say(`Read your ${clientNotes.length === 1 ? "note" : `${clientNotes.length} notes`}; starting on ${spec.documents.length} document(s) now.`);
 
@@ -58,10 +65,11 @@ async function work(hub: string, agentId: string): Promise<number> {
     const body = JSON.stringify({ job_id: job.id, agent: agentId, provider: PROVIDER, model: MODEL_NAME, results }, null, 2);
     fs.writeFileSync(outPath, body);
     const outHash = crypto.createHash("sha256").update(body).digest("hex");
-    // One proof goes on-chain: the last document's (every per-document proof is in the output file).
-    const proof = results.map((r) => r.proof).filter(Boolean).at(-1) ?? null;
-    const s = await call(agent, hub, "submit", { job_id: job.id, output_uri: `${outPath}#sha256=${outHash}`, proof });
-    console.log(`  submitted ${outPath}${proof ? " with TEE proof (verified on-chain)" : ""}  ${explorerTx(txHash(s))}`);
+    // The hub only accepts a signature over `job:<id>:out:<hash>:...`. A NEAR AI Cloud
+    // signature covers the model request and response, not this job, so it is left in the file
+    // and not sent on-chain. require_proof jobs are skipped above.
+    const s = await call(agent, hub, "submit", { job_id: job.id, output_uri: `${outPath}#sha256=${outHash}`, proof: null });
+    console.log(`  submitted ${outPath}  ${explorerTx(txHash(s))}`);
     done++;
   }
   return done;

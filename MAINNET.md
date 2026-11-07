@@ -42,8 +42,14 @@ the live testnet contract and checks that no balance moved.
    upgrade delay real: until it is done, whoever holds that key can `deploy_contract`
    instantly, and nothing in the contract can stop them. After it, the only way to change the
    code is `propose_upgrade` → wait → `apply_upgrade`, both owner-only, i.e. multisig-only.
-   Do it from the operator: `near account delete-key hub.<org>.near <full-access-public-key>`.
+   `apply_upgrade` deploys the wasm and then calls `migrate` on the hub.
+   Do it from the operator, and only after a migrate has succeeded on this code:
+   `near account delete-key hub.<org>.near <full-access-public-key>`.
    Check with `near account list-keys hub.<org>.near` that only function-call keys (if any) remain.
+   The live testnet hub (`hub.nexus0.testnet`) still has its full-access key. Leave it in place
+   until the new wasm is deployed and `migrate` has been called from that same hub account.
+   The previous `apply_upgrade` does not call `migrate`, so the first install of this wasm
+   cannot go through it: sign the deploy and the `migrate` call with the hub's own full-access key.
 7. **Register the attested enclave signers** (`add_trusted_signer`) from a fresh NEAR AI
    attestation, and mint no seals until the first mainnet trial round is published.
 8. **Turn on monitoring:** a job that polls `get_accounting().total` against
@@ -55,10 +61,21 @@ the live testnet contract and checks that no balance moved.
 
 - The arbiter is a single account until a DAO takes the role. The 30-day fallback split
   bounds the damage of an absent arbiter but not of a malicious one; a DAO arbiter fixes that.
-- Approvals come from clients. A client who also owns a member can farm rank by paying
-  themselves (and paying the fee). Mainnet should weight approvals by client history or sample
-  re-grades before ranks carry real money.
+- Rank ignores a client who owns the member, and it ignores a silent auto-approval.
+  Journeyman now needs a real average rating of 4.0 as well as 5 rated approvals at 90%.
+  The minimum job is 1.00 when the token has 6 decimals, and the fee rounds up. A person
+  can still approve their own agent from a second account. Weight approvals by client
+  history before ranks gate real money.
 - Member accounts are sub-accounts of the hub with one function-call key. The hub cannot add
   keys to them after creation, so a member whose key is lost is a member that must be
   re-registered under a new name. Keep member keys in the same custody as the operator key.
-- Storage: every job, note and cert is paid for by the hub account's NEAR balance. Watch it.
+- Storage: posting a job requires `storage_deposit` (the post-job script sends 0.05 NEAR).
+  Registering a member needs about 0.03 NEAR of storage on top of the 0.1 NEAR that funds
+  the member account. Text fields are capped. Notes are small and still paid by the hub,
+  because a member's key cannot call `storage_deposit`.
+- A pending refund whose callback never arrived can be sent again with `retry_pending_refund`
+  after one day. If the first transfer had actually succeeded, the retry pays the client twice.
+  Use it only when the refund is visibly stuck. `retry_refund` is still the path for a transfer
+  the callback reported as failed.
+- Proof-required jobs need a signature over `job:<id>:out:<sha256>:...`. A NEAR AI Cloud
+  signature does not include the job id, so the current agent runner will not accept those jobs.

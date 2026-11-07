@@ -119,6 +119,23 @@ async function completeSignedOnce(system: string, user: string, model: string, m
   return { text, proof, body };
 }
 
+/**
+ * Text the hub recovers. A Cloud signature over `model:request:response` does not match this,
+ * so this runner cannot satisfy `require_proof` until an enclave signs this string.
+ */
+export function hubProofText(jobId: number, outputHash: string, proof: Pick<ExecutionProof, "signature_kind" | "model" | "request_hash" | "response_hash">): string {
+  const out = outputHash.toLowerCase().replace(/^0x/, "");
+  if (proof.signature_kind === "provider_tee") {
+    return `job:${jobId}:out:${out}:${proof.model}:${proof.request_hash}:${proof.response_hash}`;
+  }
+  return `job:${jobId}:out:${out}:${proof.request_hash}:${proof.response_hash}`;
+}
+
+/** This process cannot produce `hubProofText` signatures. Cloud signs a different payload. */
+export function canSignHubProof(): boolean {
+  return false;
+}
+
 /** EIP-191 personal_sign recovery → lowercase 0x address. Same math the contract does with ecrecover. */
 export function recoverSigner(text: string, signatureHex: string): string {
   const msg = Buffer.from(text, "utf8");

@@ -6,7 +6,7 @@
 //   npm run attack:escrow -- --name herald
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { accountFromEnv, agentAccount, call, env, arg, view, usdc, fmtUsdc, txHash, explorerTx } from "./near.js";
+import { accountFromEnv, agentAccount, call, env, arg, view, usdc, fmtUsdc, txHash, explorerTx, NEAR } from "./near.js";
 
 type Row = { attack: string; expected: string; result: string; ok: boolean };
 const rows: Row[] = [];
@@ -49,6 +49,7 @@ async function main() {
     const specPath = "samples/job-invoices.json";
     const hash = crypto.createHash("sha256").update(fs.readFileSync(specPath)).digest("hex");
     const msg = JSON.stringify({ skill: "document-extraction", min_level: 1, spec_uri: `${specPath}#sha256=${hash}`, ...extra });
+    await call(from, hub, "storage_deposit", {}, { deposit: NEAR / 20n });
     await call(from, token, "ft_transfer_call", { receiver_id: hub, amount: budget, msg }, { deposit: 1n, gas: 100_000_000_000_000n });
     const jobs: any[] = await view(hub, "list_jobs", { status: "Open" });
     return jobs.filter((j) => j.client === from.accountId).at(-1).id as number;
