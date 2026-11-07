@@ -29,6 +29,15 @@ const MIN_AGENT_DEPOSIT: NearToken = NearToken::from_millinear(100); // 0.1 NEAR
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_CALLBACK: Gas = Gas::from_tgas(10);
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+/// Hard ceiling on the guild fee. The owner can move the fee below this, never above.
+pub const MAX_FEE_BPS: u16 = 800;
+/// After submit, the client has this long to approve or dispute. Then anyone may settle.
+pub const DEFAULT_REVIEW_WINDOW_NS: u64 = 5 * NS_PER_DAY;
+/// A dispute the arbiter leaves unresolved for this long may be settled by anyone at the fallback split.
+pub const DISPUTE_FALLBACK_NS: u64 = 30 * NS_PER_DAY;
+pub const FALLBACK_MEMBER_BPS: u16 = 5_000;
+/// Storage key (outside the state struct) for proposed upgrade code.
+const UPGRADE_CODE_KEY: &[u8] = b"__upgrade_code";
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -44,6 +53,8 @@ enum StorageKey {
     AgentsV3,
     Revocations,
     Notes,
+    AgentsV4,
+    JobsV3,
 }
 
 pub const RANK_NAMES: [&str; 4] = ["Apprentice", "Journeyman", "Master", "Legend"];
@@ -65,13 +76,15 @@ pub struct AgentProfile {
     pub withdraw_cap_per_day: U128,
     pub withdraw_allowlist: Vec<AccountId>,
     pub created_at: u64,
-    /// Sum of client ratings over approved jobs (avg = rating_sum / jobs_approved).
+    /// Sum of client ratings over *rated* approvals (avg = rating_sum / rating_count).
     pub rating_sum: u32,
     pub jobs_rejected: u32,
     /// Asking price per job, token base units. Informational; the client sets the budget.
     pub rate: U128,
     /// Human-facing name shown on the board. The account name is the permanent handle.
     pub display_name: String,
+    /// Approvals that carried a rating. Auto-approvals (silent client) count as approved but unrated.
+    pub rating_count: u32,
 }
 
 /// Rank is computed from the account's own work history. Exams never raise it.
@@ -148,8 +161,26 @@ pub enum JobStatus {
     Accepted,
     Submitted,
     Approved,
+    /// Legacy (pre-v6): client rejected and was refunded outright. New rejections open a dispute.
     Rejected,
     Cancelled,
+    /// Client rejected after submit; the arbiter decides the split, or the fallback applies after 30 days.
+    Disputed,
+    /// Dispute settled (by the arbiter or the fallback). `member_bps` records the split.
+    Resolved,
+}
+
+/// Money owed back to the client, tracked separately from the business outcome so a
+/// cancel and a dispute split share one refund path and nothing can be paid twice.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RefundStatus {
+    None,
+    /// Transfer sent; waiting for `on_refund`.
+    Pending,
+    Refunded,
+    /// Transfer failed (e.g. client not registered on the token). `refund_amount` is still owed; `retry_refund`.
+    Failed,
 }
 
 #[near(serializers = [borsh, json])]
@@ -172,6 +203,17 @@ pub struct Job {
     /// If true, `submit` must carry a valid TEE execution proof.
     pub require_proof: bool,
     pub proof: Option<ExecutionProof>,
+    /// Guild fee locked when the job was funded. A later fee change never touches this job.
+    pub fee_bps: u16,
+    /// After `submitted_at + review_window_ns`, anyone may `claim_auto_approve`.
+    pub review_window_ns: u64,
+    pub submitted_at: Option<u64>,
+    pub disputed_at: Option<u64>,
+    /// Share of the budget the member received when the job was settled (10000 = all of it).
+    pub member_bps: Option<u16>,
+    pub refund: RefundStatus,
+    /// Amount owed back to the client while `refund` is Pending or Failed.
+    pub refund_amount: U128,
 }
 
 /// `msg` of the `ft_transfer_call` that funds a job.
@@ -182,6 +224,35 @@ pub struct PostJobMsg {
     pub spec_uri: String,
     pub min_rank: Option<u8>,
     pub require_proof: Option<bool>,
+    /// Review window in days (1..=30). Default 5.
+    pub review_days: Option<u32>,
+}
+
+/// Where every token the hub holds is accounted for. `total` must equal the hub's
+/// balance on the token contract (minus anything someone sent without a job).
+#[near(serializers = [json])]
+pub struct Accounting {
+    /// Budgets of jobs not yet settled (Open, Accepted, Submitted, Disputed).
+    pub escrowed: U128,
+    /// Members' in-contract balances.
+    pub member_balances: U128,
+    /// Guild fees not yet withdrawn.
+    pub fees: U128,
+    /// Transfers sent but not yet confirmed by their callback.
+    pub in_flight: U128,
+    /// Failed refunds still owed to clients.
+    pub refunds_owed: U128,
+    pub total: U128,
+}
+
+#[near(serializers = [json])]
+pub struct Governance {
+    pub owner: AccountId,
+    pub pending_owner: Option<AccountId>,
+    pub arbiter: AccountId,
+    pub paused: bool,
+    pub upgrade_delay_ns: u64,
+    pub pending_upgrade: Option<(String, u64)>,
 }
 
 /// NEP-177 token metadata (subset) so wallets and explorers render certs.
@@ -219,6 +290,7 @@ pub struct Stats {
     pub jobs: u64,
     pub fee_bps: u16,
     pub token: AccountId,
+    pub paused: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,47 +313,28 @@ pub struct AgentHub {
     trusted_signers: IterableMap<String, String>,
     revocations: LookupMap<AccountId, Vec<Revocation>>,
     notes: LookupMap<JobId, Vec<Note>>,
+    // --- v6: accounting counters. Invariant: token balance == escrowed + liabilities + in_flight + refunds_owed.
+    /// Budgets held for unsettled jobs.
+    escrowed: u128,
+    /// Sum of every member's in-contract balance.
+    liabilities: u128,
+    /// Guild fees accrued and not yet withdrawn.
+    fees: u128,
+    /// Outgoing transfers awaiting their callback.
+    in_flight: u128,
+    /// Failed refunds still owed to clients.
+    refunds_owed: u128,
+    // --- v6: governance.
+    pending_owner: Option<AccountId>,
+    arbiter: AccountId,
+    paused: bool,
+    upgrade_delay_ns: u64,
+    /// (sha256 of proposed code, proposed_at)
+    pending_upgrade: Option<([u8; 32], u64)>,
 }
 
-/// v4 layout (before contract notes), read once by `migrate_v5`.
-mod v4 {
-    use super::*;
-    #[near(serializers = [borsh])]
-    pub struct State {
-        pub owner: AccountId,
-        pub token: AccountId,
-        pub fee_bps: u16,
-        pub agents: IterableMap<AccountId, AgentProfile>,
-        pub certs: LookupMap<AccountId, Vec<Cert>>,
-        pub jobs: IterableMap<JobId, Job>,
-        pub next_job_id: JobId,
-        pub balances: LookupMap<AccountId, u128>,
-        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
-        pub trusted_signers: IterableMap<String, String>,
-        pub revocations: LookupMap<AccountId, Vec<Revocation>>,
-    }
-}
-
-/// v3 layout (before revocation records), read once by `migrate_v4`.
-mod v3 {
-    use super::*;
-    #[near(serializers = [borsh])]
-    pub struct State {
-        pub owner: AccountId,
-        pub token: AccountId,
-        pub fee_bps: u16,
-        pub agents: IterableMap<AccountId, AgentProfile>,
-        pub certs: LookupMap<AccountId, Vec<Cert>>,
-        pub jobs: IterableMap<JobId, Job>,
-        pub next_job_id: JobId,
-        pub balances: LookupMap<AccountId, u128>,
-        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
-        pub trusted_signers: IterableMap<String, String>,
-    }
-}
-
-/// v2 layout (ranks/proofs, no display names), read once by `migrate_v3`.
-mod v2 {
+/// v5 layout (before escrow hardening), read once by `migrate_v6`.
+mod v5 {
     use super::*;
     #[near(serializers = [borsh])]
     pub struct AgentProfile {
@@ -298,37 +351,7 @@ mod v2 {
         pub rating_sum: u32,
         pub jobs_rejected: u32,
         pub rate: U128,
-    }
-    #[near(serializers = [borsh])]
-    pub struct State {
-        pub owner: AccountId,
-        pub token: AccountId,
-        pub fee_bps: u16,
-        pub agents: IterableMap<AccountId, AgentProfile>,
-        pub certs: LookupMap<AccountId, Vec<Cert>>,
-        pub jobs: IterableMap<JobId, Job>,
-        pub next_job_id: JobId,
-        pub balances: LookupMap<AccountId, u128>,
-        pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
-        pub trusted_signers: IterableMap<String, String>,
-    }
-}
-
-/// Pre-rank/proof layout, read once by `migrate`.
-mod v1 {
-    use super::*;
-    #[near(serializers = [borsh])]
-    pub struct AgentProfile {
-        pub account: AccountId,
-        pub owner: AccountId,
-        pub model: String,
-        pub skills: Vec<String>,
-        pub jobs_completed: u32,
-        pub jobs_approved: u32,
-        pub total_earned: U128,
-        pub withdraw_cap_per_day: U128,
-        pub withdraw_allowlist: Vec<AccountId>,
-        pub created_at: u64,
+        pub display_name: String,
     }
     #[near(serializers = [borsh])]
     pub struct Job {
@@ -344,6 +367,9 @@ mod v1 {
         pub rating: Option<u8>,
         pub created_at: u64,
         pub updated_at: u64,
+        pub min_rank: u8,
+        pub require_proof: bool,
+        pub proof: Option<ExecutionProof>,
     }
     #[near(serializers = [borsh])]
     pub struct State {
@@ -356,6 +382,9 @@ mod v1 {
         pub next_job_id: JobId,
         pub balances: LookupMap<AccountId, u128>,
         pub withdrawn_today: LookupMap<AccountId, (u64, u128)>,
+        pub trusted_signers: IterableMap<String, String>,
+        pub revocations: LookupMap<AccountId, Vec<Revocation>>,
+        pub notes: LookupMap<JobId, Vec<Note>>,
     }
 }
 
@@ -364,117 +393,78 @@ impl AgentHub {
     /// `token` is the NEP-141 stablecoin used for budgets (USDC on NEAR).
     /// `fee_bps` is the platform fee in basis points (1000 = 10%).
     #[init]
-    pub fn new(owner: AccountId, token: AccountId, fee_bps: u16) -> Self {
-        require!(fee_bps <= 5_000, "fee too high");
+    pub fn new(owner: AccountId, token: AccountId, fee_bps: u16, upgrade_delay_ns: Option<u64>) -> Self {
+        require!(fee_bps <= MAX_FEE_BPS, "fee too high");
         Self {
-            owner,
+            owner: owner.clone(),
             token,
             fee_bps,
-            agents: IterableMap::new(StorageKey::Agents),
+            agents: IterableMap::new(StorageKey::AgentsV4),
             certs: LookupMap::new(StorageKey::Certs),
-            jobs: IterableMap::new(StorageKey::Jobs),
+            jobs: IterableMap::new(StorageKey::JobsV3),
             next_job_id: 0,
             balances: LookupMap::new(StorageKey::Balances),
             withdrawn_today: LookupMap::new(StorageKey::WithdrawnToday),
             trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
             revocations: LookupMap::new(StorageKey::Revocations),
             notes: LookupMap::new(StorageKey::Notes),
+            escrowed: 0, liabilities: 0, fees: 0, in_flight: 0, refunds_owed: 0,
+            pending_owner: None, arbiter: owner, paused: false,
+            upgrade_delay_ns: upgrade_delay_ns.unwrap_or(0), pending_upgrade: None,
         }
     }
 
-    /// Upgrades v1 state (no ranks/proofs) in place. Owner-only via #[private].
+    /// v5 → v6: escrow hardening. Old jobs keep the 6% fee they were settled under and get
+    /// the default review window; settled refunds are marked Refunded; the owner's fee
+    /// balance moves to `fees`; accounting counters are rebuilt from the records.
+    /// `upgrade_delay_ns`: short on testnet; 48h is the mainnet plan (see MAINNET.md). Owner-only via #[private].
     #[private]
     #[init(ignore_state)]
-    pub fn migrate() -> Self {
-        let old: v1::State = env::state_read().expect("no v1 state");
-        let mut agents = IterableMap::new(StorageKey::AgentsV2);
+    pub fn migrate_v6(upgrade_delay_ns: u64) -> Self {
+        let old: v5::State = env::state_read().expect("no v5 state");
+        let mut balances = old.balances;
+        let mut agents = IterableMap::new(StorageKey::AgentsV4);
+        let mut liabilities: u128 = 0;
         for (k, a) in old.agents.iter() {
-            agents.insert(k.clone(), AgentProfile {
-                account: a.account.clone(), owner: a.owner.clone(), model: a.model.clone(), skills: a.skills.clone(),
-                jobs_completed: a.jobs_completed, jobs_approved: a.jobs_approved, total_earned: a.total_earned,
-                withdraw_cap_per_day: a.withdraw_cap_per_day, withdraw_allowlist: a.withdraw_allowlist.clone(),
-                created_at: a.created_at,
-                // Ratings were 5/5 on every approved job so far; carry that forward.
-                rating_sum: a.jobs_approved * 5, jobs_rejected: a.jobs_completed - a.jobs_approved, rate: U128(0),
-                display_name: String::new(),
-            });
-        }
-        let mut jobs = IterableMap::new(StorageKey::JobsV2);
-        for (k, j) in old.jobs.iter() {
-            jobs.insert(*k, Job {
-                id: j.id, client: j.client.clone(), skill: j.skill.clone(), min_level: j.min_level, budget: j.budget,
-                spec_uri: j.spec_uri.clone(), agent: j.agent.clone(), output_uri: j.output_uri.clone(), status: j.status.clone(),
-                rating: j.rating, created_at: j.created_at, updated_at: j.updated_at,
-                min_rank: 0, require_proof: false, proof: None,
-            });
-        }
-        env::log_str(&format!("migrated {} agents, {} jobs", agents.len(), jobs.len()));
-        Self {
-            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs,
-            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
-            trusted_signers: IterableMap::new(StorageKey::TrustedSigners),
-            revocations: LookupMap::new(StorageKey::Revocations),
-            notes: LookupMap::new(StorageKey::Notes),
-        }
-    }
-
-    /// v2 → v3: adds display names. Owner-only via #[private].
-    #[private]
-    #[init(ignore_state)]
-    pub fn migrate_v3() -> Self {
-        let old: v2::State = env::state_read().expect("no v2 state");
-        let mut agents = IterableMap::new(StorageKey::AgentsV3);
-        for (k, a) in old.agents.iter() {
+            liabilities += balances.get(k).copied().unwrap_or(0);
             agents.insert(k.clone(), AgentProfile {
                 account: a.account.clone(), owner: a.owner.clone(), model: a.model.clone(), skills: a.skills.clone(),
                 jobs_completed: a.jobs_completed, jobs_approved: a.jobs_approved, total_earned: a.total_earned,
                 withdraw_cap_per_day: a.withdraw_cap_per_day, withdraw_allowlist: a.withdraw_allowlist.clone(),
                 created_at: a.created_at, rating_sum: a.rating_sum, jobs_rejected: a.jobs_rejected, rate: a.rate,
-                display_name: String::new(),
+                display_name: a.display_name.clone(),
+                rating_count: a.jobs_approved, // every approval so far carried a rating
             });
         }
-        env::log_str(&format!("migrated {} agents to v3", agents.len()));
-        Self {
-            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents, certs: old.certs, jobs: old.jobs,
-            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
-            trusted_signers: old.trusted_signers,
-            revocations: LookupMap::new(StorageKey::Revocations),
-            notes: LookupMap::new(StorageKey::Notes),
+        let fees = balances.get(&old.owner).copied().unwrap_or(0);
+        balances.remove(&old.owner);
+        let mut jobs = IterableMap::new(StorageKey::JobsV3);
+        let mut escrowed: u128 = 0;
+        for (k, j) in old.jobs.iter() {
+            let live = matches!(j.status, JobStatus::Open | JobStatus::Accepted | JobStatus::Submitted);
+            if live { escrowed += j.budget.0; }
+            let refunded = matches!(j.status, JobStatus::Rejected | JobStatus::Cancelled);
+            jobs.insert(*k, Job {
+                id: j.id, client: j.client.clone(), skill: j.skill.clone(), min_level: j.min_level, budget: j.budget,
+                spec_uri: j.spec_uri.clone(), agent: j.agent.clone(), output_uri: j.output_uri.clone(), status: j.status.clone(),
+                rating: j.rating, created_at: j.created_at, updated_at: j.updated_at,
+                min_rank: j.min_rank, require_proof: j.require_proof, proof: j.proof.clone(),
+                fee_bps: 600, review_window_ns: DEFAULT_REVIEW_WINDOW_NS,
+                submitted_at: if j.status == JobStatus::Submitted { Some(j.updated_at) } else { None },
+                disputed_at: None,
+                member_bps: if j.status == JobStatus::Approved { Some(10_000) } else { None },
+                refund: if refunded { RefundStatus::Refunded } else { RefundStatus::None },
+                refund_amount: U128(0),
+            });
         }
-    }
-
-    /// v3 → v4: adds revocation records. `backfill` carries burns that happened before
-    /// records existed (they are still visible as nft_burn events on chain). Owner-only via #[private].
-    #[private]
-    #[init(ignore_state)]
-    pub fn migrate_v4(backfill: Vec<(AccountId, Revocation)>) -> Self {
-        let old: v3::State = env::state_read().expect("no v3 state");
-        let mut revocations: LookupMap<AccountId, Vec<Revocation>> = LookupMap::new(StorageKey::Revocations);
-        for (agent, r) in backfill {
-            let mut v = revocations.get(&agent).cloned().unwrap_or_default();
-            v.push(r);
-            revocations.insert(agent, v);
-        }
-        env::log_str("migrated to v4 (revocation records)");
+        env::log_str(&format!("migrated to v6: {} agents, {} jobs, escrowed {}, liabilities {}, fees {}", agents.len(), jobs.len(), escrowed, liabilities, fees));
         Self {
-            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents: old.agents, certs: old.certs, jobs: old.jobs,
-            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
-            trusted_signers: old.trusted_signers, revocations,
-            notes: LookupMap::new(StorageKey::Notes),
-        }
-    }
-
-    /// v4 → v5: adds contract notes. Owner-only via #[private].
-    #[private]
-    #[init(ignore_state)]
-    pub fn migrate_v5() -> Self {
-        let old: v4::State = env::state_read().expect("no v4 state");
-        env::log_str("migrated to v5 (contract notes)");
-        Self {
-            owner: old.owner, token: old.token, fee_bps: old.fee_bps, agents: old.agents, certs: old.certs, jobs: old.jobs,
-            next_job_id: old.next_job_id, balances: old.balances, withdrawn_today: old.withdrawn_today,
-            trusted_signers: old.trusted_signers, revocations: old.revocations,
-            notes: LookupMap::new(StorageKey::Notes),
+            owner: old.owner.clone(), token: old.token, fee_bps: old.fee_bps.min(MAX_FEE_BPS), agents, certs: old.certs, jobs,
+            next_job_id: old.next_job_id, balances, withdrawn_today: old.withdrawn_today,
+            trusted_signers: old.trusted_signers, revocations: old.revocations, notes: old.notes,
+            escrowed, liabilities, fees, in_flight: 0, refunds_owed: 0,
+            pending_owner: None, arbiter: old.owner, paused: false,
+            upgrade_delay_ns, pending_upgrade: None,
         }
     }
 
@@ -524,6 +514,7 @@ impl AgentHub {
             jobs_rejected: 0,
             rate: rate.unwrap_or(U128(0)),
             display_name: display_name.unwrap_or_default(),
+            rating_count: 0,
         };
 
         Promise::new(account)
@@ -746,11 +737,15 @@ impl AgentHub {
         msg: String,
     ) -> PromiseOrValue<U128> {
         require!(env::predecessor_account_id() == self.token, "unsupported token");
+        // Panicking here makes the token contract's ft_resolve_transfer return the funds to the sender.
+        require!(!self.paused, "hub is paused: no new contracts");
         require!(amount.0 > 0, "budget must be > 0");
         let post: PostJobMsg = serde_json::from_str(&msg).expect("bad msg: expected {skill,min_level,spec_uri}");
         require!((1..=3).contains(&post.min_level), "min_level must be 1..=3");
         let min_rank = post.min_rank.unwrap_or(0);
         require!(min_rank <= 3, "min_rank must be 0..=3");
+        let review_days = post.review_days.unwrap_or(5);
+        require!((1..=30).contains(&review_days), "review_days must be 1..=30");
 
         let id = self.next_job_id;
         self.next_job_id += 1;
@@ -771,14 +766,23 @@ impl AgentHub {
             min_rank,
             require_proof: post.require_proof.unwrap_or(false),
             proof: None,
+            fee_bps: self.fee_bps, // locked for the life of this job
+            review_window_ns: review_days as u64 * NS_PER_DAY,
+            submitted_at: None,
+            disputed_at: None,
+            member_bps: None,
+            refund: RefundStatus::None,
+            refund_amount: U128(0),
         };
         self.jobs.insert(id, job);
+        self.escrowed += amount.0;
         self.log_job(id, "job_posted");
         PromiseOrValue::Value(U128(0)) // keep the whole amount
     }
 
     /// Agent (predecessor) accepts an open job. Requires a matching, unexpired cert.
     pub fn accept_job(&mut self, job_id: JobId) {
+        require!(!self.paused, "hub is paused");
         let agent = env::predecessor_account_id();
         require!(self.agents.get(&agent).is_some(), "not a registered agent");
         let (skill, min_level, min_rank) = {
@@ -803,6 +807,7 @@ impl AgentHub {
     /// TEE execution proof. If the job requires a proof, a missing or invalid
     /// one fails the call: the contract will not accept unverified work.
     pub fn submit(&mut self, job_id: JobId, output_uri: String, proof: Option<ExecutionProof>) {
+        require!(!self.paused, "hub is paused");
         let agent = env::predecessor_account_id();
         if let Some(p) = &proof {
             let signer = Self::recover_signer(p);
@@ -816,6 +821,7 @@ impl AgentHub {
         job.proof = proof;
         job.output_uri = Some(output_uri);
         job.status = JobStatus::Submitted;
+        job.submitted_at = Some(env::block_timestamp());
         job.updated_at = env::block_timestamp();
         self.log_job(job_id, "job_submitted");
     }
@@ -828,7 +834,7 @@ impl AgentHub {
         let job = self.jobs.get(&job_id).expect("unknown job");
         let who = env::predecessor_account_id();
         require!(who == job.client || job.agent.as_ref() == Some(&who), "only the client or the assigned member may post");
-        require!(matches!(job.status, JobStatus::Open | JobStatus::Accepted | JobStatus::Submitted), "contract is settled");
+        require!(matches!(job.status, JobStatus::Open | JobStatus::Accepted | JobStatus::Submitted | JobStatus::Disputed), "contract is settled");
         self.push_note(job_id, who, text);
     }
 
@@ -849,68 +855,164 @@ impl AgentHub {
         self.notes.get(&job_id).cloned().unwrap_or_default()
     }
 
+    /// Client approves the submitted work. Budget minus the job's locked fee goes to the
+    /// member's in-contract balance; the fee accrues to the guild; the rating is recorded.
     pub fn approve(&mut self, job_id: JobId, rating: u8) {
         require!((1..=5).contains(&rating), "rating must be 1..=5");
         let client = env::predecessor_account_id();
-        let (agent, budget) = {
-            let job = self.jobs.get_mut(&job_id).expect("no such job");
+        {
+            let job = self.jobs.get(&job_id).expect("no such job");
             require!(job.client == client, "not this job's client");
             require!(job.status == JobStatus::Submitted, "job is not submitted");
-            job.status = JobStatus::Approved;
-            job.rating = Some(rating);
-            job.updated_at = env::block_timestamp();
-            (job.agent.clone().unwrap(), job.budget.0)
-        };
-
-        let fee = budget * self.fee_bps as u128 / 10_000;
-        let payout = budget - fee;
-        self.credit(&agent, payout);
-        self.credit(&self.owner.clone(), fee);
-
-        let profile = self.agents.get_mut(&agent).expect("agent vanished");
-        profile.jobs_completed += 1;
-        profile.jobs_approved += 1;
-        profile.rating_sum += rating as u32;
-        profile.total_earned = U128(profile.total_earned.0 + payout);
-        self.log_job(job_id, "job_approved");
-    }
-
-    /// Client rejects a submitted job: escrow is refunded to the client.
-    /// (Disputes are a roadmap item; v1 trusts the client.)
-    pub fn reject(&mut self, job_id: JobId, reason: String) -> Promise {
-        let client = env::predecessor_account_id();
-        let (agent, budget) = {
-            let job = self.jobs.get_mut(&job_id).expect("no such job");
-            require!(job.client == client, "not this job's client");
-            require!(job.status == JobStatus::Submitted, "job is not submitted");
-            job.status = JobStatus::Rejected;
-            job.updated_at = env::block_timestamp();
-            (job.agent.clone().unwrap(), job.budget.0)
-        };
-        if let Some(p) = self.agents.get_mut(&agent) {
-            p.jobs_completed += 1;
-            p.jobs_rejected += 1;
         }
-        env::log_str(&format!("job {} rejected: {}", job_id, reason));
-        // The reason joins the contract's thread, so it is on the record next to any notes that led to it.
-        if !reason.trim().is_empty() { self.push_note(job_id, client.clone(), format!("Rejected: {}", reason.chars().take(MAX_NOTE_LEN - 10).collect::<String>())); }
-        self.log_job(job_id, "job_rejected");
-        self.ft_transfer(client, budget, format!("refund job {}", job_id))
+        let _ = self.settle(job_id, 10_000, Some(rating), JobStatus::Approved, "job_approved"); // never refunds
     }
 
-    /// Client cancels an Open job and gets the escrow back.
+    /// The client said nothing for the whole review window: anyone may settle the job as
+    /// approved (unrated), so a silent client cannot hold a member's pay hostage.
+    pub fn claim_auto_approve(&mut self, job_id: JobId) {
+        {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(job.status == JobStatus::Submitted, "job is not submitted");
+            let deadline = job.submitted_at.expect("no submit time") + job.review_window_ns;
+            require!(env::block_timestamp() >= deadline, "review window still open");
+        }
+        let _ = self.settle(job_id, 10_000, None, JobStatus::Approved, "job_auto_approved");
+    }
+
+    /// Client rejects submitted work. Nothing moves: the job becomes Disputed and the
+    /// arbiter decides the split. If the arbiter sits on it for 30 days, anyone may apply
+    /// the fallback split. The reason joins the thread so a dispute reads as-is.
+    pub fn reject(&mut self, job_id: JobId, reason: String) {
+        let client = env::predecessor_account_id();
+        {
+            let job = self.jobs.get_mut(&job_id).expect("no such job");
+            require!(job.client == client, "not this job's client");
+            require!(job.status == JobStatus::Submitted, "job is not submitted");
+            job.status = JobStatus::Disputed;
+            job.disputed_at = Some(env::block_timestamp());
+            job.updated_at = env::block_timestamp();
+        }
+        if !reason.trim().is_empty() {
+            self.push_note(job_id, client, format!("Rejected: {}", reason.chars().take(MAX_NOTE_LEN - 10).collect::<String>()));
+        }
+        self.log_job(job_id, "job_disputed");
+    }
+
+    /// Arbiter settles a dispute: `member_bps` of the budget goes to the member (fee applies
+    /// to that share), the rest is refunded to the client.
+    pub fn resolve_dispute(&mut self, job_id: JobId, member_bps: u16) -> PromiseOrValue<bool> {
+        require!(env::predecessor_account_id() == self.arbiter, "arbiter only");
+        require!(member_bps <= 10_000, "member_bps must be 0..=10000");
+        {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(job.status == JobStatus::Disputed, "job is not disputed");
+        }
+        self.settle(job_id, member_bps, None, JobStatus::Resolved, "job_resolved")
+    }
+
+    /// Anyone: a dispute left unresolved for `DISPUTE_FALLBACK_NS` settles at the fallback split.
+    pub fn claim_dispute_fallback(&mut self, job_id: JobId) -> PromiseOrValue<bool> {
+        {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(job.status == JobStatus::Disputed, "job is not disputed");
+            require!(env::block_timestamp() >= job.disputed_at.expect("no dispute time") + DISPUTE_FALLBACK_NS, "dispute fallback not yet available");
+        }
+        self.settle(job_id, FALLBACK_MEMBER_BPS, None, JobStatus::Resolved, "job_resolved_fallback")
+    }
+
+    /// Client cancels a job nobody has accepted yet; the escrow is refunded.
     pub fn cancel(&mut self, job_id: JobId) -> Promise {
         let client = env::predecessor_account_id();
         let budget = {
             let job = self.jobs.get_mut(&job_id).expect("no such job");
             require!(job.client == client, "not this job's client");
-            require!(job.status == JobStatus::Open, "only open jobs can be cancelled");
+            require!(job.status == JobStatus::Open, "only open (unaccepted) jobs can be cancelled");
             job.status = JobStatus::Cancelled;
             job.updated_at = env::block_timestamp();
             job.budget.0
         };
+        self.escrowed -= budget;
         self.log_job(job_id, "job_cancelled");
-        self.ft_transfer(client, budget, format!("refund job {}", job_id))
+        self.start_refund(job_id, client, budget)
+    }
+
+    /// Re-send a refund whose transfer failed (e.g. the client was not registered on the
+    /// token at the time). Client or owner.
+    pub fn retry_refund(&mut self, job_id: JobId) -> Promise {
+        let who = env::predecessor_account_id();
+        let (client, amount) = {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(who == job.client || who == self.owner, "client or owner only");
+            require!(job.refund == RefundStatus::Failed, "no failed refund on this job");
+            (job.client.clone(), job.refund_amount.0)
+        };
+        self.refunds_owed -= amount;
+        self.start_refund(job_id, client, amount)
+    }
+
+    /// The one place a settlement happens. State is final *before* any transfer leaves.
+    fn settle(&mut self, job_id: JobId, member_bps: u16, rating: Option<u8>, status: JobStatus, event: &str) -> PromiseOrValue<bool> {
+        let now = env::block_timestamp();
+        let (agent, client, budget, fee_bps) = {
+            let job = self.jobs.get_mut(&job_id).expect("no such job");
+            require!(matches!(job.status, JobStatus::Submitted | JobStatus::Disputed), "job cannot be settled");
+            require!(job.refund == RefundStatus::None, "refund already in progress");
+            job.status = status;
+            job.rating = rating;
+            job.member_bps = Some(member_bps);
+            job.updated_at = now;
+            (job.agent.clone().expect("no member"), job.client.clone(), job.budget.0, job.fee_bps)
+        };
+        let member_share = budget * member_bps as u128 / 10_000;
+        let client_share = budget - member_share;
+        let fee = member_share * fee_bps as u128 / 10_000;
+        let payout = member_share - fee;
+
+        self.escrowed -= budget;
+        self.credit(&agent, payout);
+        self.fees += fee;
+
+        let profile = self.agents.get_mut(&agent).expect("agent vanished");
+        profile.jobs_completed += 1;
+        if member_bps >= 5_000 { profile.jobs_approved += 1; } else { profile.jobs_rejected += 1; }
+        if let Some(r) = rating { profile.rating_sum += r as u32; profile.rating_count += 1; }
+        profile.total_earned = U128(profile.total_earned.0 + payout);
+        self.log_job(job_id, event);
+
+        if client_share > 0 {
+            PromiseOrValue::Promise(self.start_refund(job_id, client, client_share))
+        } else {
+            PromiseOrValue::Value(true)
+        }
+    }
+
+    /// Marks the job RefundPending and sends the tokens. `on_refund` records the outcome.
+    fn start_refund(&mut self, job_id: JobId, to: AccountId, amount: u128) -> Promise {
+        {
+            let job = self.jobs.get_mut(&job_id).unwrap();
+            job.refund = RefundStatus::Pending;
+            job.refund_amount = U128(amount);
+        }
+        self.in_flight += amount;
+        self.ft_transfer(to, amount, format!("refund job {}", job_id)).then(
+            Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_refund(job_id),
+        )
+    }
+
+    #[private]
+    pub fn on_refund(&mut self, job_id: JobId, #[callback_result] result: Result<(), PromiseError>) -> bool {
+        let amount = {
+            let job = self.jobs.get(&job_id).expect("no such job");
+            require!(job.refund == RefundStatus::Pending, "no refund pending");
+            job.refund_amount.0
+        };
+        self.in_flight -= amount;
+        let job = self.jobs.get_mut(&job_id).unwrap();
+        match result {
+            Ok(()) => { job.refund = RefundStatus::Refunded; job.refund_amount = U128(0); self.log_job(job_id, "refund_sent"); true }
+            Err(_) => { job.refund = RefundStatus::Failed; self.refunds_owed += amount; env::log_str(&format!("refund for job {} failed; {} still owed, retry_refund", job_id, amount)); false }
+        }
     }
 
     pub fn get_job(&self, job_id: JobId) -> Option<Job> {
@@ -933,6 +1035,7 @@ impl AgentHub {
     /// - `to` must be in the agent's allowlist
     /// - amount + already withdrawn today must be <= withdraw_cap_per_day
     pub fn withdraw(&mut self, to: AccountId, amount: U128) -> Promise {
+        require!(!self.paused, "hub is paused");
         let agent = env::predecessor_account_id();
         let amount = amount.0;
         require!(amount > 0, "amount must be > 0");
@@ -952,6 +1055,8 @@ impl AgentHub {
         let balance = self.balances.get(&agent).copied().unwrap_or(0);
         require!(balance >= amount, "insufficient balance");
         self.balances.insert(agent.clone(), balance - amount);
+        self.liabilities -= amount;
+        self.in_flight += amount;
         self.withdrawn_today.insert(agent.clone(), (today, spent + amount));
 
         self.ft_transfer(to, amount, format!("withdrawal by {}", agent)).then(
@@ -968,6 +1073,7 @@ impl AgentHub {
         amount: U128,
         #[callback_result] result: Result<(), PromiseError>,
     ) -> bool {
+        self.in_flight -= amount.0;
         if result.is_err() {
             // Token transfer failed (e.g. recipient not registered on the token):
             // put the funds and the daily allowance back.
@@ -996,13 +1102,113 @@ impl AgentHub {
         profile.withdraw_allowlist = withdraw_allowlist;
     }
 
-    /// Platform owner withdraws accumulated fees.
+    /// Owner withdraws accrued guild fees. Debited first; restored by the callback on failure.
     pub fn withdraw_fees(&mut self, to: AccountId, amount: U128) -> Promise {
         self.assert_owner();
-        let bal = self.balances.get(&self.owner).copied().unwrap_or(0);
-        require!(bal >= amount.0, "insufficient fee balance");
-        self.balances.insert(self.owner.clone(), bal - amount.0);
-        self.ft_transfer(to, amount.0, "platform fees".into())
+        require!(!self.paused, "hub is paused");
+        require!(amount.0 > 0 && self.fees >= amount.0, "insufficient fee balance");
+        self.fees -= amount.0;
+        self.in_flight += amount.0;
+        self.ft_transfer(to, amount.0, "guild fees".into()).then(
+            Self::ext(env::current_account_id()).with_static_gas(GAS_CALLBACK).on_withdraw_fees(amount),
+        )
+    }
+
+    #[private]
+    pub fn on_withdraw_fees(&mut self, amount: U128, #[callback_result] result: Result<(), PromiseError>) -> bool {
+        self.in_flight -= amount.0;
+        if result.is_err() {
+            self.fees += amount.0;
+            env::log_str("fee withdrawal failed; fees restored");
+            return false;
+        }
+        true
+    }
+
+    // -------------------------------------------------------------- Governance
+
+    /// Two-step ownership transfer: the proposed account must call `accept_owner`, so a
+    /// typo or an unready multisig cannot orphan the hub.
+    pub fn propose_owner(&mut self, new_owner: AccountId) {
+        self.assert_owner();
+        self.pending_owner = Some(new_owner);
+    }
+
+    pub fn accept_owner(&mut self) {
+        let who = env::predecessor_account_id();
+        require!(self.pending_owner.as_ref() == Some(&who), "not the proposed owner");
+        env::log_str(&format!("owner {} -> {}", self.owner, who));
+        if self.arbiter == self.owner { self.arbiter = who.clone(); }
+        self.owner = who;
+        self.pending_owner = None;
+    }
+
+    /// Who settles disputes. Defaults to the owner; can be a separate account or a DAO.
+    pub fn set_arbiter(&mut self, arbiter: AccountId) {
+        self.assert_owner();
+        self.arbiter = arbiter;
+    }
+
+    /// Pause stops money coming in and going out to members (funding, accepts, submits,
+    /// withdrawals). Refunds, approvals and dispute settlement keep working so nobody's
+    /// funds are trapped by the pause itself.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.assert_owner();
+        self.paused = paused;
+        env::log_str(if paused { "hub paused" } else { "hub unpaused" });
+    }
+
+    /// Stage new contract code. It can only be deployed by `apply_upgrade` after the delay.
+    /// Meaningful once the hub account holds no full-access key (see MAINNET.md).
+    pub fn propose_upgrade(&mut self, code: Vec<u8>) {
+        self.assert_owner();
+        require!(!code.is_empty(), "empty code");
+        let hash = env::sha256_array(&code);
+        env::storage_write(UPGRADE_CODE_KEY, &code);
+        self.pending_upgrade = Some((hash, env::block_timestamp()));
+        env::log_str(&format!("upgrade proposed: sha256 {} ({} bytes), applicable after {} s", hex_encode(&hash), code.len(), self.upgrade_delay_ns / 1_000_000_000));
+    }
+
+    pub fn cancel_upgrade(&mut self) {
+        self.assert_owner();
+        self.pending_upgrade = None;
+        env::storage_remove(UPGRADE_CODE_KEY);
+    }
+
+    pub fn apply_upgrade(&mut self) -> Promise {
+        self.assert_owner();
+        let (hash, proposed_at) = self.pending_upgrade.expect("no upgrade proposed");
+        require!(env::block_timestamp() >= proposed_at + self.upgrade_delay_ns, "upgrade delay has not passed");
+        let code = env::storage_read(UPGRADE_CODE_KEY).expect("upgrade code missing");
+        require!(env::sha256_array(&code) == hash, "upgrade code does not match proposal");
+        self.pending_upgrade = None;
+        env::storage_remove(UPGRADE_CODE_KEY);
+        env::log_str(&format!("applying upgrade sha256 {}", hex_encode(&hash)));
+        Promise::new(env::current_account_id()).deploy_contract(code)
+    }
+
+    /// The delay can be lengthened at any time; shortening it takes an upgrade, i.e. the delay itself.
+    pub fn set_upgrade_delay(&mut self, upgrade_delay_ns: u64) {
+        self.assert_owner();
+        require!(upgrade_delay_ns >= self.upgrade_delay_ns, "the upgrade delay can only grow");
+        self.upgrade_delay_ns = upgrade_delay_ns;
+    }
+
+    pub fn get_governance(&self) -> Governance {
+        Governance {
+            owner: self.owner.clone(), pending_owner: self.pending_owner.clone(), arbiter: self.arbiter.clone(),
+            paused: self.paused, upgrade_delay_ns: self.upgrade_delay_ns,
+            pending_upgrade: self.pending_upgrade.map(|(h, t)| (hex_encode(&h), t)),
+        }
+    }
+
+    /// Where every token is. `total` should match the hub's balance on the token contract.
+    pub fn get_accounting(&self) -> Accounting {
+        Accounting {
+            escrowed: U128(self.escrowed), member_balances: U128(self.liabilities), fees: U128(self.fees),
+            in_flight: U128(self.in_flight), refunds_owed: U128(self.refunds_owed),
+            total: U128(self.escrowed + self.liabilities + self.fees + self.in_flight + self.refunds_owed),
+        }
     }
 
     // ------------------------------------------------ Trusted TEE signers
@@ -1041,12 +1247,15 @@ impl AgentHub {
         U128(self.balances.get(&account).copied().unwrap_or(0))
     }
 
-    /// Owner-only. Changes the guild's cut of every settled contract. Applies to
-    /// contracts settled after the change; escrowed budgets are not touched.
+    /// Owner-only. Changes the guild's cut for contracts funded *after* this call. Every
+    /// existing job keeps the fee it was funded under. Hard-capped at MAX_FEE_BPS.
     pub fn set_fee_bps(&mut self, fee_bps: u16) {
         self.assert_owner();
-        require!(fee_bps <= 5_000, "fee too high");
-        env::log_str(&format!("fee {} -> {} bps", self.fee_bps, fee_bps));
+        require!(fee_bps <= MAX_FEE_BPS, "fee too high");
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"guildhall","version":"1.0.0","event":"fee_changed","data":{{"from_bps":{},"to_bps":{}}}}}"#,
+            self.fee_bps, fee_bps
+        ));
         self.fee_bps = fee_bps;
     }
 
@@ -1056,6 +1265,7 @@ impl AgentHub {
             jobs: self.jobs.len() as u64,
             fee_bps: self.fee_bps,
             token: self.token.clone(),
+            paused: self.paused,
         }
     }
 
@@ -1064,7 +1274,7 @@ impl AgentHub {
     pub(crate) fn rank_of(p: &AgentProfile) -> Rank {
         let approved = p.jobs_approved;
         let pct = if p.jobs_completed > 0 { approved * 100 / p.jobs_completed } else { 0 };
-        let avg10 = if approved > 0 { p.rating_sum * 10 / approved } else { 0 };
+        let avg10 = if p.rating_count > 0 { p.rating_sum * 10 / p.rating_count } else { 0 };
         let rank: u8 = if approved >= 100 && pct >= 97 && avg10 >= 47 { 3 }
             else if approved >= 25 && pct >= 95 && avg10 >= 45 { 2 }
             else if approved >= 5 && pct >= 90 { 1 }
@@ -1105,6 +1315,7 @@ impl AgentHub {
     fn credit(&mut self, account: &AccountId, amount: u128) {
         let bal = self.balances.get(account).copied().unwrap_or(0);
         self.balances.insert(account.clone(), bal + amount);
+        self.liabilities += amount;
     }
 
     fn ft_transfer(&self, receiver: AccountId, amount: u128, memo: String) -> Promise {
@@ -1197,7 +1408,7 @@ mod tests {
 
     fn setup() -> AgentHub {
         testing_env!(ctx(accounts(0)).build());
-        let mut c = AgentHub::new(accounts(0), token(), 1_000);
+        let mut c = AgentHub::new(accounts(0), token(), 600, Some(60 * 1_000_000_000));
         // Register the agent directly (skipping the cross-contract account creation).
         c.agents.insert(
             agent(),
@@ -1216,9 +1427,29 @@ mod tests {
                 jobs_rejected: 0,
                 rate: U128(0),
                 display_name: "Ledger Hand".into(),
+                rating_count: 0,
             },
         );
         c
+    }
+
+    /// What the token contract holds for the hub, assuming transfers in flight have not landed yet.
+    /// Every test calls `check(&c, token_balance)` after each operation.
+    fn check(c: &AgentHub, token_balance: u128) {
+        let a = c.get_accounting();
+        assert_eq!(a.total.0, token_balance, "accounting drift: escrowed {} + members {} + fees {} + in_flight {} + owed {} != token {}",
+            a.escrowed.0, a.member_balances.0, a.fees.0, a.in_flight.0, a.refunds_owed.0, token_balance);
+    }
+
+    fn gold(c: &mut AgentHub) {
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 3, "".into());
+    }
+
+    fn submit_job(c: &mut AgentHub, id: JobId) {
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        c.submit(id, "ipfs://output".into(), None);
     }
 
     fn post_job(c: &mut AgentHub, client: AccountId, budget: u128, min_level: u8) -> JobId {
@@ -1246,14 +1477,17 @@ mod tests {
         c.accept_job(id);
         c.submit(id, "ipfs://output".into(), None);
 
+        check(&c, 5_000_000);
         testing_env!(ctx(accounts(2)).build());
         c.approve(id, 5);
 
-        assert_eq!(c.get_balance(agent()).0, 4_500_000);
-        assert_eq!(c.get_balance(accounts(0)).0, 500_000);
+        assert_eq!(c.get_balance(agent()).0, 4_700_000);
+        assert_eq!(c.get_accounting().fees.0, 300_000);
         let p = c.get_agent(agent()).unwrap();
         assert_eq!(p.jobs_approved, 1);
-        assert_eq!(p.total_earned.0, 4_500_000);
+        assert_eq!(p.rating_count, 1);
+        assert_eq!(p.total_earned.0, 4_700_000);
+        check(&c, 5_000_000);
     }
 
     #[test]
@@ -1338,7 +1572,7 @@ mod tests {
     fn fee_is_capped() {
         let mut c = setup();
         testing_env!(ctx(accounts(0)).build());
-        c.set_fee_bps(5_001);
+        c.set_fee_bps(MAX_FEE_BPS + 1);
     }
 
     #[test]
@@ -1352,11 +1586,15 @@ mod tests {
     #[test]
     fn withdraw_enforces_allowlist_and_cap() {
         let mut c = setup();
-        c.balances.insert(agent(), 10_000_000);
+        c.credit(&agent(), 10_000_000);
+        check(&c, 10_000_000);
 
         testing_env!(ctx(agent()).build());
         c.withdraw(accounts(1), U128(2_000_000));
         assert_eq!(c.get_balance(agent()).0, 8_000_000);
+        check(&c, 10_000_000); // in flight until the callback
+        c.on_withdraw(agent(), U128(2_000_000), Ok(()));
+        check(&c, 8_000_000);
 
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             testing_env!(ctx(agent()).build());
@@ -1374,6 +1612,10 @@ mod tests {
         testing_env!(ctx(agent()).block_timestamp(1_001 * NS_PER_DAY).build());
         c.withdraw(accounts(1), U128(3_000_000));
         assert_eq!(c.get_balance(agent()).0, 5_000_000);
+        // A failed transfer restores balance, allowance and accounting.
+        c.on_withdraw(agent(), U128(3_000_000), Err(PromiseError::Failed));
+        assert_eq!(c.get_balance(agent()).0, 8_000_000);
+        check(&c, 8_000_000);
     }
 
     #[test]
@@ -1419,13 +1661,16 @@ mod tests {
         let mut c = setup();
         let p = c.agents.get_mut(&agent()).unwrap();
         assert_eq!(AgentHub::rank_of(p).name, "Apprentice");
-        p.jobs_completed = 5; p.jobs_approved = 5; p.rating_sum = 20;
+        p.jobs_completed = 5; p.jobs_approved = 5; p.rating_sum = 20; p.rating_count = 5;
         assert_eq!(AgentHub::rank_of(p).name, "Journeyman");
-        p.jobs_completed = 26; p.jobs_approved = 25; p.rating_sum = 115; // 4.6 avg, 96%
+        p.jobs_completed = 26; p.jobs_approved = 25; p.rating_sum = 115; p.rating_count = 25; // 4.6 avg, 96%
         assert_eq!(AgentHub::rank_of(p).name, "Master");
-        p.jobs_completed = 100; p.jobs_approved = 100; p.rating_sum = 480;
+        p.jobs_completed = 100; p.jobs_approved = 100; p.rating_sum = 480; p.rating_count = 100;
         assert_eq!(AgentHub::rank_of(p).name, "Legend");
-        p.jobs_completed = 10; p.jobs_approved = 8; p.rating_sum = 40; // 80%: back to Apprentice
+        // Unrated auto-approvals count as approved work but do not move the average.
+        p.jobs_completed = 120; p.jobs_approved = 120;
+        assert_eq!(AgentHub::rank_of(p).avg_rating_x10, 48);
+        p.jobs_completed = 10; p.jobs_approved = 8; p.rating_sum = 40; p.rating_count = 8; // 80%: back to Apprentice
         assert_eq!(AgentHub::rank_of(p).rank, 0);
     }
 
@@ -1439,6 +1684,246 @@ mod tests {
         c.ft_on_transfer(accounts(2), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","min_rank":2}"#.into());
         testing_env!(ctx(agent()).build());
         c.accept_job(0);
+    }
+
+    // ------------------------------------------------ escrow hardening (v6)
+
+    #[test]
+    fn fee_is_locked_per_job() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        testing_env!(ctx(accounts(0)).build());
+        c.set_fee_bps(800); // raised after funding
+        let id2 = post_job(&mut c, accounts(2), 1_000_000, 1);
+        assert_eq!(c.get_job(id).unwrap().fee_bps, 600);
+        assert_eq!(c.get_job(id2).unwrap().fee_bps, 800);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.approve(id, 4);
+        assert_eq!(c.get_balance(agent()).0, 940_000, "settled at the locked 6%, not the new 8%");
+        check(&c, 2_000_000);
+    }
+
+    #[test]
+    fn auto_approve_at_deadline_not_before() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        let deadline = 1_000 * NS_PER_DAY + DEFAULT_REVIEW_WINDOW_NS;
+        // one nanosecond early: refused
+        testing_env!(ctx(accounts(5)).block_timestamp(deadline - 1).build());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim_auto_approve(id)));
+        assert!(r.is_err(), "review window still open");
+        assert_eq!(c.get_job(id).unwrap().status, JobStatus::Submitted);
+        // at the deadline: anyone may settle it, unrated
+        testing_env!(ctx(accounts(5)).block_timestamp(deadline).build());
+        c.claim_auto_approve(id);
+        let j = c.get_job(id).unwrap();
+        assert_eq!(j.status, JobStatus::Approved);
+        assert_eq!(j.rating, None);
+        let p = c.get_agent(agent()).unwrap();
+        assert_eq!((p.jobs_approved, p.rating_count), (1, 0));
+        assert_eq!(c.get_balance(agent()).0, 940_000);
+        check(&c, 1_000_000);
+    }
+
+    #[test]
+    fn custom_review_window_is_honoured() {
+        let mut c = setup(); gold(&mut c);
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","review_days":1}"#.into());
+        submit_job(&mut c, 0);
+        testing_env!(ctx(accounts(5)).block_timestamp(1_000 * NS_PER_DAY + NS_PER_DAY).build());
+        c.claim_auto_approve(0);
+        assert_eq!(c.get_job(0).unwrap().status, JobStatus::Approved);
+    }
+
+    #[test]
+    fn reject_opens_a_dispute_and_the_arbiter_splits_it() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.reject(id, "totals are wrong".into());
+        let j = c.get_job(id).unwrap();
+        assert_eq!(j.status, JobStatus::Disputed);
+        assert_eq!(c.get_notes(id).last().unwrap().text, "Rejected: totals are wrong");
+        assert_eq!(c.get_accounting().escrowed.0, 1_000_000, "nothing moved on reject");
+        check(&c, 1_000_000);
+        // a second reject or an approve on a disputed job is refused
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.reject(id, "again".into()) }));
+        assert!(r.is_err());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.approve(id, 5) }));
+        assert!(r.is_err());
+        // arbiter: 30% to the member, 70% back to the client
+        testing_env!(ctx(accounts(0)).build());
+        c.resolve_dispute(id, 3_000);
+        let j = c.get_job(id).unwrap();
+        assert_eq!(j.status, JobStatus::Resolved);
+        assert_eq!(j.member_bps, Some(3_000));
+        assert_eq!(j.refund, RefundStatus::Pending);
+        assert_eq!(j.refund_amount.0, 700_000);
+        assert_eq!(c.get_balance(agent()).0, 282_000); // 300_000 minus 6%
+        assert_eq!(c.get_accounting().fees.0, 18_000);
+        check(&c, 1_000_000);
+        // refund lands
+        c.on_refund(id, Ok(()));
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Refunded);
+        check(&c, 300_000);
+        let p = c.get_agent(agent()).unwrap();
+        assert_eq!((p.jobs_completed, p.jobs_approved, p.jobs_rejected), (1, 0, 1));
+        // nothing can settle it twice
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(0)).build()); c.resolve_dispute(id, 10_000) }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "arbiter only")]
+    fn strangers_cannot_resolve_disputes() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.reject(id, "".into());
+        testing_env!(ctx(accounts(5)).build());
+        c.resolve_dispute(id, 10_000);
+    }
+
+    #[test]
+    fn dispute_fallback_after_thirty_days() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.reject(id, "".into());
+        let t = 1_000 * NS_PER_DAY + DISPUTE_FALLBACK_NS;
+        testing_env!(ctx(accounts(5)).block_timestamp(t - 1).build());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.claim_dispute_fallback(id))).is_err());
+        testing_env!(ctx(accounts(5)).block_timestamp(t).build());
+        c.claim_dispute_fallback(id);
+        let j = c.get_job(id).unwrap();
+        assert_eq!((j.status.clone(), j.member_bps, j.refund_amount.0), (JobStatus::Resolved, Some(5_000), 500_000));
+        assert_eq!(c.get_balance(agent()).0, 470_000);
+        check(&c, 1_000_000);
+    }
+
+    #[test]
+    fn failed_refund_is_owed_then_retried() {
+        let mut c = setup();
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        testing_env!(ctx(accounts(2)).build());
+        c.cancel(id);
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Pending);
+        check(&c, 1_000_000);
+        // client not registered on the token: ft_transfer fails
+        c.on_refund(id, Err(PromiseError::Failed));
+        let j = c.get_job(id).unwrap();
+        assert_eq!((j.status.clone(), j.refund.clone(), j.refund_amount.0), (JobStatus::Cancelled, RefundStatus::Failed, 1_000_000));
+        assert_eq!(c.get_accounting().refunds_owed.0, 1_000_000);
+        check(&c, 1_000_000);
+        // settling or cancelling during a failed/pending refund is impossible
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.cancel(id) })).is_err());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.on_refund(id, Ok(())))).is_err(), "callback cannot be replayed");
+        // retry succeeds
+        testing_env!(ctx(accounts(2)).build());
+        c.retry_refund(id);
+        assert_eq!(c.get_accounting().refunds_owed.0, 0);
+        check(&c, 1_000_000);
+        c.on_refund(id, Ok(()));
+        assert_eq!(c.get_job(id).unwrap().refund, RefundStatus::Refunded);
+        check(&c, 0);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(2)).build()); c.retry_refund(id) })).is_err(), "no double refund");
+    }
+
+    #[test]
+    #[should_panic(expected = "only open (unaccepted)")]
+    fn cancel_is_refused_once_accepted() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        testing_env!(ctx(accounts(2)).build());
+        c.cancel(id);
+    }
+
+    #[test]
+    fn pause_blocks_the_right_things() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        let id2 = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        c.credit(&agent(), 500_000);
+        testing_env!(ctx(accounts(0)).build());
+        c.set_paused(true);
+        // blocked: funding, accept, withdraw, withdraw_fees
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| post_job(&mut c, accounts(2), 1, 1))).is_err());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(agent()).build()); c.accept_job(id2) })).is_err());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(agent()).build()); c.withdraw(accounts(1), U128(1)) })).is_err());
+        // allowed: approve, reject/resolve, cancel (a refund)
+        testing_env!(ctx(accounts(2)).build());
+        c.approve(id, 5);
+        c.cancel(id2);
+        assert_eq!(c.get_job(id2).unwrap().refund, RefundStatus::Pending);
+        check(&c, 2_500_000);
+        testing_env!(ctx(accounts(0)).build());
+        c.set_paused(false);
+        testing_env!(ctx(agent()).build());
+        c.withdraw(accounts(1), U128(1));
+    }
+
+    #[test]
+    fn two_step_owner_transfer() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.propose_owner(accounts(4));
+        assert_eq!(c.get_governance().owner, accounts(0), "nothing changes until accepted");
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(5)).build()); c.accept_owner() })).is_err());
+        testing_env!(ctx(accounts(4)).build());
+        c.accept_owner();
+        let g = c.get_governance();
+        assert_eq!((g.owner, g.arbiter, g.pending_owner), (accounts(4), accounts(4), None));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { testing_env!(ctx(accounts(0)).build()); c.set_fee_bps(100) })).is_err(), "old owner is out");
+    }
+
+    #[test]
+    fn upgrade_waits_for_the_delay() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.propose_upgrade(vec![0, 97, 115, 109]);
+        testing_env!(ctx(accounts(0)).block_timestamp(1_000 * NS_PER_DAY + 59 * 1_000_000_000).build());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.apply_upgrade())).is_err(), "too early");
+        assert!(c.get_governance().pending_upgrade.is_some());
+        testing_env!(ctx(accounts(0)).block_timestamp(1_000 * NS_PER_DAY + 60 * 1_000_000_000).build());
+        c.apply_upgrade();
+        assert!(c.get_governance().pending_upgrade.is_none());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.set_upgrade_delay(1))).is_err(), "delay cannot shrink");
+    }
+
+    #[test]
+    fn fee_withdrawal_round_trips_accounting() {
+        let mut c = setup(); gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 1_000_000, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).build());
+        c.approve(id, 5);
+        testing_env!(ctx(accounts(0)).build());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.withdraw_fees(accounts(0), U128(60_001)))).is_err());
+        c.withdraw_fees(accounts(0), U128(60_000));
+        check(&c, 1_000_000);
+        c.on_withdraw_fees(U128(60_000), Err(PromiseError::Failed));
+        assert_eq!(c.get_accounting().fees.0, 60_000);
+        check(&c, 1_000_000);
+        c.withdraw_fees(accounts(0), U128(60_000));
+        c.on_withdraw_fees(U128(60_000), Ok(()));
+        check(&c, 940_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "owner only")]
+    fn strangers_cannot_withdraw_fees() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(5)).build());
+        c.withdraw_fees(accounts(5), U128(1));
     }
 
     // A real EIP-191 signature produced off-chain (secp256k1 test key) over
@@ -1497,8 +1982,10 @@ mod tests {
         c.submit(b, "x".into(), None);
         testing_env!(ctx(accounts(2)).build());
         c.reject(b, "wrong totals".into());
-        assert_eq!(c.get_job(b).unwrap().status, JobStatus::Rejected);
+        // v6: a reject no longer refunds outright; it opens a dispute and the money stays escrowed.
+        assert_eq!(c.get_job(b).unwrap().status, JobStatus::Disputed);
         assert_eq!(c.get_balance(agent()).0, 0);
-        assert_eq!(c.list_jobs(Some(JobStatus::Rejected), None, None).len(), 1);
+        assert_eq!(c.list_jobs(Some(JobStatus::Disputed), None, None).len(), 1);
+        check(&c, 2_000_000);
     }
 }

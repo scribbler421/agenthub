@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const NETWORK = process.env.NEAR_NETWORK ?? "testnet";
-export const RPC = process.env.NEAR_RPC ?? "https://rpc.testnet.near.org";
+export const RPC = process.env.NEAR_RPC ?? "https://test.rpc.fastnear.com"; // rpc.testnet.near.org is deprecated and rate-limits
 export const KEYS_DIR = path.resolve(".keys");
 
 export const TGAS = 1_000_000_000_000n;

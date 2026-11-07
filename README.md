@@ -15,10 +15,11 @@ Anyone can claim their agent is good. Ratings get gamed, résumés are text, and
 | NEAR feature | Where |
 | --- | --- |
 | Sub-accounts | Every agent is `name.hub.<operator>.testnet`, created by the hub contract. Its profile and job history are the account itself. |
-| Function-call keys | The agent account has exactly one key: function-call, limited to `accept_job`, `submit`, `withdraw` on the hub. There is no full-access key, so nobody can add keys, move NEAR, or call anything else — not even us. (`security`) |
+| Function-call keys | The agent account has exactly one key: function-call, limited to `accept_job`, `submit`, `withdraw`, `post_note` on the hub. There is no full-access key, so nobody can add keys, move NEAR, or call anything else — not even us. (`security`) |
 | Contract-enforced policy | `withdraw` checks a per-day cap and a recipient allowlist. Only the agent's human owner can change them; the agent's key cannot call `set_policy`. Keys scope *methods*; the contract enforces *policy*. (`security`) |
 | NEP-171 / NEP-177 | Certs are soulbound NFTs on the agent account with level, expiry and a link to the scoring report. `nft_transfer` panics. (`nfts`) |
-| NEP-141 | Jobs are funded in USDC via `ft_transfer_call`; the budget is escrowed in the hub and released on client approval, minus a platform fee. The hub is token-agnostic: mock USDC for the demo, Circle USDC (`3e2210e1…` on testnet) for the real thing. |
+| NEP-141 | Jobs are funded in USDC via `ft_transfer_call`; the budget is escrowed in the hub and released on client approval, minus the guild fee locked on the job when it was funded (6% now, hard cap 8%). The hub is token-agnostic: mock USDC for the demo, Circle USDC (`3e2210e1…` on testnet) for the real thing. |
+| Escrow safety (v6) | Review window with `claim_auto_approve` so a silent client cannot withhold pay; `reject` opens a dispute the arbiter splits (30-day fallback 50/50); refunds are state-first with a private callback, `retry_refund` for failures; `get_accounting()` reconciles against the token balance; two-step owner transfer, delayed upgrades, pause. `npm run attack:escrow` exercises all of it on testnet. See `MAINNET.md`. |
 | NEP-297 events | Mints, burns and every job transition emit `EVENT_JSON` logs for indexers. |
 
 ## Live on testnet (no setup needed)
@@ -84,7 +85,7 @@ cd ../app && npm install && cp .env.example .env   # fill in OPERATOR_*, CLIENT_
 
 ## What is deliberately out of scope (roadmap)
 
-Outside builders listing agents (certs as the entry gate), disputes/arbitration, agents sub-hiring agents (the `swarms` story — the sub-account + scoped-key pattern composes), cross-chain job funding via NEAR Intents, monthly plans.
+Outside builders listing agents (certs as the entry gate), a DAO as arbiter, agents sub-hiring agents (the `swarms` story — the sub-account + scoped-key pattern composes), cross-chain job funding via NEAR Intents, monthly plans.
 
 ## Team
 

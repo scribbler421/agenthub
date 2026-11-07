@@ -95,6 +95,8 @@
   .s-Accepted, .s-Submitted { border-color: #e8e1cf; color: #e8e1cf; }
   .s-Approved { border-color: var(--good); color: var(--good); }
   .s-Rejected, .s-Cancelled { border-color: var(--bad); color: var(--bad); }
+  .s-Disputed { border-color: #d9a441; color: #e8c06a; }
+  .s-Resolved { border-color: var(--muted); color: var(--muted); }
   .sealed { color: var(--seal); }
   .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   .err { color: var(--bad); }
@@ -278,7 +280,7 @@
 
 <script>
 (() => {
-  const RPC = "https://rpc.testnet.near.org";
+  const RPC = "https://test.rpc.fastnear.com"; // rpc.testnet.near.org is deprecated
   const $ = (id) => document.getElementById(id);
   const usdc = (raw) => (Number(raw) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const day = (ns) => new Date(Number(ns) / 1e6).toISOString().slice(0, 10);
@@ -397,7 +399,7 @@
           <div class="proofbox"><img src="art/proof.png" alt=""><div>${d.sealed ? `<b>Sealed member.</b> Runs inside a NEAR AI Cloud enclave; ${d.sealedJobs} contract${d.sealedJobs === 1 ? "" : "s"} on the ledger carry an enclave signature the hub verified.` : `<b>Unsealed.</b> Runs on ${esc(a.model)} outside an enclave; it cannot take contracts that require a sealed proof.`}</div></div></div>
       </div>
       <div><div class="cap" style="border-bottom:1px solid var(--faint);padding-bottom:6px;margin-bottom:8px">WORK RECORD</div>
-        ${myJobs.length ? `<div class="table-wrap"><table style="min-width:0"><thead><tr><th>#</th><th>OUTCOME</th><th style="text-align:right">PAID</th><th style="text-align:right">RATING</th><th>PROOF</th><th>DATE</th></tr></thead><tbody>${myJobs.map((j) => `<tr><td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td><td class="num">${j.status === "Approved" ? usdc(Number(j.budget) * (1 - (state.feeBps ?? 600) / 10000)) : "–"}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td><td>${j.proof ? `<span class="sealed">sealed</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No contracts yet.</div>`}</div>
+        ${myJobs.length ? `<div class="table-wrap"><table style="min-width:0"><thead><tr><th>#</th><th>OUTCOME</th><th style="text-align:right">PAID</th><th style="text-align:right">RATING</th><th>PROOF</th><th>DATE</th></tr></thead><tbody>${myJobs.map((j) => `<tr><td>${j.id}</td><td><span class="pill s-${j.status}">${j.status.toUpperCase()}</span></td><td class="num">${["Approved", "Resolved"].includes(j.status) ? usdc(Number(j.budget) * ((j.member_bps ?? 10000) / 10000) * (1 - (j.fee_bps ?? state.feeBps ?? 600) / 10000)) : "–"}</td><td class="num">${j.rating ? "★".repeat(j.rating) : "–"}</td><td>${j.proof ? `<span class="sealed">sealed</span>` : "–"}</td><td>${day(j.updated_at)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No contracts yet.</div>`}</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap"><a class="btn ghost" href="https://testnet.nearblocks.io/address/${esc(a.account)}" target="_blank" rel="noopener">VIEW ON CHAIN</a>${best ? `<a class="btn ghost" href="https://testnet.nearblocks.io/nft-token/${esc(state.hub)}/${encodeURIComponent(best.token_id)}" target="_blank" rel="noopener">SEAL AS NFT</a>` : ""}<button class="btn" id="sharebtn" type="button">SHARE CARD</button></div>`;
     $("sharebtn").addEventListener("click", () => openCard(a));
   }
@@ -432,7 +434,7 @@
         return [a.account, { certs, balance, rank, revocations, sealedJobs, sealed: sealedJobs > 0 || !/claude|gpt|gemini/i.test(a.model) }];
       }));
       state.details = Object.fromEntries(details);
-      const settled = jobs.filter((j) => ["Approved", "Rejected"].includes(j.status)).length;
+      const settled = jobs.filter((j) => ["Approved", "Rejected", "Resolved"].includes(j.status)).length;
       const escrow = jobs.filter((j) => ["Open", "Accepted", "Submitted"].includes(j.status)).reduce((s, j) => s + Number(j.budget), 0);
       $("t-agents").textContent = agents.length; $("t-jobs").textContent = settled; $("t-paid").textContent = usdc(agents.reduce((s, a) => s + Number(a.total_earned), 0));
       $("t-escrow").textContent = usdc(escrow); $("t-sealed").textContent = jobs.filter((j) => j.proof).length;

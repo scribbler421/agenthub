@@ -1,4 +1,5 @@
-// Client reviews the output and approves (pays from escrow) or rejects (refund).
+// Client reviews the output and approves (pays from escrow) or rejects (opens a dispute; the
+// arbiter splits it with `npm run dispute`). Nothing is refunded by a reject on its own.
 //   npm run approve -- --job 0 --rating 5
 //   npm run approve -- --job 0 --reject "wrong totals"
 import fs from "node:fs";
@@ -21,7 +22,7 @@ async function main() {
   const before = await view(hub, "get_balance", { account: job.agent });
   if (hasFlag("reject")) {
     const r = await call(client, hub, "reject", { job_id: jobId, reason: arg("reject") });
-    console.log(`rejected; escrow refunded  ${explorerTx(txHash(r))}`);
+    console.log(`rejected → disputed; escrow stays in the hub until the arbiter resolves it  ${explorerTx(txHash(r))}`);
     return;
   }
   const rating = Number(arg("rating", "5"));

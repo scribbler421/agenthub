@@ -15,7 +15,9 @@
     "attack": "tsx src/attack.ts",
     "status": "tsx src/status.ts",
     "typecheck": "tsc --noEmit",
-    "note": "tsx src/note.ts"
+    "note": "tsx src/note.ts",
+    "attack:escrow": "tsx src/attack-escrow.ts",
+    "dispute": "tsx src/dispute.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
