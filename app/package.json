@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "note": "tsx src/note.ts",
     "attack:escrow": "tsx src/attack-escrow.ts",
-    "dispute": "tsx src/dispute.ts"
+    "dispute": "tsx src/dispute.ts",
+    "render-cards": "tsx src/render-cards.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "playwright": "^1.56.0"
   }
 }

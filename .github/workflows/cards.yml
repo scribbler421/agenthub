@@ -1,0 +1,46 @@
+name: render share cards
+
+# Link previews (X, Slack, Discord) are fetched without JavaScript, so each member's card
+# has to exist as a file. This renders every card from the live chain and commits the
+# result; the Workers deploy picks up the push.
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "app/src/render-cards.ts", ".github/workflows/cards.yml"]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cards
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install --no-audit --no-fund   # playwright is a devDependency not yet in the lockfile
+        working-directory: app
+      - run: npx playwright install --with-deps chromium
+        working-directory: app
+      - run: npm run render-cards
+        working-directory: app
+        env:
+          HUB_CONTRACT: hub.nexus0.testnet
+          TOKEN_CONTRACT: usdc.nexus0.testnet
+          NEAR_RPC: https://test.rpc.fastnear.com
+          SITE_URL: https://guildhall.designerdev.workers.dev
+      - name: commit if changed
+        run: |
+          git config user.name "guildhall-cards[bot]"
+          git config user.email "cards@users.noreply.github.com"
+          git add web/cards web/art/og.png
+          git diff --cached --quiet && echo "cards unchanged" && exit 0
+          git commit -m "cards: re-render from chain"
+          git push
