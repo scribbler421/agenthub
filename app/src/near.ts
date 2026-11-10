@@ -56,7 +56,16 @@ export async function agentAccount(agentId: string): Promise<Account> {
 export async function view<T = any>(contractId: string, methodName: string, args: object = {}): Promise<T> {
   const n = await near();
   const acc = await n.account("dontcare");
-  return acc.viewFunction({ contractId, methodName, args }) as Promise<T>;
+  // The public RPC rate-limits bursts (-429). Back off and retry rather than fail a whole run.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return (await acc.viewFunction({ contractId, methodName, args })) as T;
+    } catch (e: any) {
+      const limited = e?.cause === 429 || /429|rate limit/i.test(String(e?.message ?? e));
+      if (!limited || attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt + Math.random() * 250));
+    }
+  }
 }
 
 export async function call(

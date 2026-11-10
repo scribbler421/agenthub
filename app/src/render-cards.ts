@@ -46,9 +46,11 @@ async function main() {
     fs.writeFileSync(path.join(OUT, `${slug}.png`), Buffer.from(card.split(",")[1], "base64"));
     fs.writeFileSync(path.join(OUT, `${slug}-og.png`), Buffer.from(og.split(",")[1], "base64"));
 
-    const [certs, rank, revs] = await Promise.all([
-      view(hub, "get_certs", { agent: a.account }), view(hub, "get_rank", { agent: a.account }), view(hub, "get_revocations", { agent: a.account }).catch(() => []),
-    ]);
+    // One at a time: the page above has just made its own burst of reads against the same RPC.
+    const certs = await view(hub, "get_certs", { agent: a.account });
+    const rank = await view(hub, "get_rank", { agent: a.account });
+    const revs = await view(hub, "get_revocations", { agent: a.account }).catch(() => []);
+    await new Promise((r) => setTimeout(r, 1500));
     const now = Date.now() * 1e6;
     const cur = (certs as any[]).filter((c) => Number(c.expires_at) > now).sort((x, y) => Number(y.issued_at) - Number(x.issued_at))[0];
     const seal = cur ? `${LEVEL[cur.level]} seal` : (revs as any[]).length ? `${LEVEL[(revs as any[]).at(-1).level]} seal burned` : "no seal";

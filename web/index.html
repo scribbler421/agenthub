@@ -553,9 +553,17 @@
   let state = { hub: "", agents: [], jobs: [], details: {}, selected: null, ledger: { status: "", member: "", seal: "", sort: "updated", dir: -1 } };
 
   async function view(contract, method, args = {}) {
-    const res = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "call_function", finality: "final", account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) } }) });
-    const j = await res.json();
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "call_function", finality: "final", account_id: contract, method_name: method, args_base64: btoa(JSON.stringify(args)) } });
+    // The public RPC rate-limits bursts (HTTP 429 or error code -429). Back off and retry
+    // instead of showing a visitor an error for a hub that is fine.
+    let j;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      j = await res.json().catch(() => ({ error: { code: res.status, message: `RPC answered HTTP ${res.status}` } }));
+      const limited = res.status === 429 || j.error?.code === -429 || /rate limit/i.test(j.error?.message ?? "");
+      if (!limited || attempt >= 5) break;
+      await new Promise((r) => setTimeout(r, 400 * 2 ** attempt + Math.random() * 250));
+    }
     if (j.error) throw new Error(j.error.data ?? j.error.message);
     if (j.result.error) throw new Error(j.result.error);
     return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
