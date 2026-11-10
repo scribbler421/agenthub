@@ -1,4 +1,4 @@
-// Prints the hub state: agents, certs, jobs, balances.
+// Prints the hub state (read-only; for a pass/fail check of the README claims use `npm run verify`): agents, certs, jobs, balances.
 import { env, view, fmtUsdc } from "./near.js";
 
 const hub = env("HUB_CONTRACT");
