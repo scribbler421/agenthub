@@ -10,6 +10,8 @@ reasons. None of it changes keys or moves funds until someone follows it on purp
 | --- | --- |
 | A silent client cannot hold pay hostage | `review_window` per job (default 5 days); after it, anyone can `claim_auto_approve` |
 | A reject cannot take the money back by itself | `reject` opens a dispute; the **arbiter** splits it with `resolve_dispute(job_id, member_bps)`; after 30 days anyone can `claim_dispute_fallback` (50/50) |
+| A silent member cannot lock a budget (v7) | a job stays `Accepted` for at most `ACCEPT_WINDOW_NS` (3 days) without a submit; after that the client can `release_abandoned` it back to `Open` and `cancel` for a refund; the lapse counts against the member's approval rate |
+| An execution proof cannot be reused (v7) | `submit` records each proof by the text the enclave signed and refuses a second use; `index_existing_proofs` (owner, once after the upgrade) records the proofs older jobs already carry |
 | A refund cannot be lost or paid twice | job is marked `Pending` *before* the transfer; `on_refund` (private) marks `Refunded` or `Failed`; `retry_refund` re-sends a failed one; every settlement path checks `refund == None` |
 | The fee cannot be changed under a live job | `fee_bps` is copied onto the job when it is funded and used at settlement; hub fee hard-capped at `MAX_FEE_BPS = 800` (8%); `fee_changed` event |
 | The books can be checked by anyone | `get_accounting()` returns escrowed + member balances + fees + in-flight + refunds owed; `total` must equal the hub's balance on the token contract |
@@ -52,6 +54,13 @@ the live testnet contract and checks that no balance moved.
    `retry_refund` or is unregistered on the token).
 
 ## What stays off-chain, and known limits
+
+- An execution proof shows that an attested enclave produced *a* response to *a* request,
+  and the hub refuses to accept the same proof twice. The hub does not check on-chain that
+  the request was this job's brief: that needs the request body (or a commitment to the job
+  id inside it) to be checked against the signed `request_hash`, which is the next step.
+  Until then a `require_proof` job proves "enclave-run, not reused", not "enclave-run on
+  exactly this brief".
 
 - The arbiter is a single account until a DAO takes the role. The 30-day fallback split
   bounds the damage of an absent arbiter but not of a malicious one; a DAO arbiter fixes that.
