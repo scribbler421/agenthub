@@ -68,7 +68,9 @@ async function main() {
   const from = arg("from", "base");
   const amount = arg("amount", "5");
   const client = arg("client", process.env.CLIENT_ACCOUNT ?? "client.near");
-  const refundTo = arg("refund-to", "0x0000000000000000000000000000000000000000"); // the client's address on the origin chain
+  // The client's address on the origin chain. For dry quotes a well-formed placeholder is enough.
+  const PLACEHOLDER: Record<string, string> = { base: "0x1111111111111111111111111111111111111111", eth: "0x1111111111111111111111111111111111111111", arb: "0x1111111111111111111111111111111111111111", sol: "C7LFNsL593nrJ7XS5SR3Ta5ugvTDcB7JnV6CuD65cRkF", tron: "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf" };
+  const refundTo = arg("refund-to", PLACEHOLDER[from] ?? "");
   const hub = arg("hub", process.env.HUB_CONTRACT ?? "hub.nexus0.testnet");
   const execute = hasFlag("execute");
   if (execute && hub.endsWith(".testnet")) throw new Error("--execute needs a mainnet hub: NEAR Intents has no testnet. Drop --execute for a quote.");
@@ -77,11 +79,14 @@ async function main() {
   const hash = crypto.createHash("sha256").update(fs.readFileSync(specPath)).digest("hex");
   const msg = JSON.stringify({ skill: "document-extraction", min_level: Number(arg("min-level", "1")), min_rank: Number(arg("min-rank", "0")), require_proof: hasFlag("require-proof"), review_days: Number(arg("review-days", "5")), spec_uri: `${specPath}#sha256=${hash}`, client });
 
-  console.log(`Fund a ${amount} USDC contract on ${hub} from ${from.toUpperCase()} (${execute ? "LIVE" : "dry quote"})`);
-  const { quote, originAsset, body } = await quoteFunding({ from, amountUsdc: amount, hub, msg, client, refundTo, execute });
+  // 1Click checks that the recipient exists on mainnet. Against the testnet hub a dry quote uses a
+  // stand-in mainnet account (the price does not depend on who receives); --recipient overrides it.
+  const recipient = execute ? hub : arg("recipient", hub.endsWith(".testnet") ? "intents.near" : hub);
+  console.log(`Fund a ${amount} USDC contract on ${hub} from ${from.toUpperCase()} (${execute ? "LIVE" : `dry quote${recipient !== hub ? `, priced for stand-in recipient ${recipient}` : ""}`})`);
+  const { quote, originAsset, body } = await quoteFunding({ from, amountUsdc: amount, hub: recipient, msg, client, refundTo, execute });
   console.log(`  origin asset   ${originAsset}`);
   console.log(`  you send       ${quote.amountInFormatted} (≈ $${quote.amountInUsd})`);
-  console.log(`  hub receives   ${fmtUsdc(quote.amountOut)} USDC on NEAR (min ${fmtUsdc(quote.minAmountOut)} after slippage)`);
+  console.log(`  hub receives   ${fmtUsdc(quote.amountOut)} on NEAR (min ${fmtUsdc(quote.minAmountOut)} after slippage)`);
   console.log(`  solver fee     ${(Number(quote.amountInFormatted) - Number(quote.amountOutFormatted)).toFixed(4)} ${from === "tron" ? "USDT" : "USDC"}${KEY ? "" : " (includes 1Click's 0.25% unauthenticated fee)"}`);
   console.log(`  time to settle ~${quote.timeEstimate}s after your deposit confirms`);
   console.log(`  on arrival     ft_transfer_call(${hub}, ${fmtUsdc(quote.amountOut)}, msg) → contract created for ${client}`);

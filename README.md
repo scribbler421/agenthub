@@ -94,14 +94,20 @@ Intents contract, not the person paying (`PostJobMsg.client`; naming someone els
 gives them a funded contract).
 
 ```
-npm run fund -- --from base --amount 25 --min-level 2 --client alice.near
-  you send       25.14 USDC on base  ·  hub receives 25.00 USDC on NEAR  ·  ~2 min after your deposit confirms
-  on arrival     ft_transfer_call(hub, 25.00, msg) → contract created for alice.near
+$ npm run fund -- --from base --amount 120 --min-level 2 --client alice.near
+Fund a 120 USDC contract from BASE (dry quote)
+  you send       120.613331 USDC on Base (≈ $120.57)
+  hub receives   120.00 USDC on NEAR
+  solver fee     0.6133 USDC (includes 1Click's 0.25% unauthenticated fee)
+  time to settle ~35s after your deposit confirms
+  on arrival     ft_transfer_call(hub, 120.00 USDC, msg) → contract created for alice.near
 ```
 
+Live on 10 Nov 2026: Base 0.61 USDC fee / ~35 s, Solana 0.62 / ~20 s, Tron (USDT) 0.74 / ~82 s. 1Click currently enforces a $100 minimum per swap.
+
 The board has the same quote under FUND. Honest limits: NEAR Intents has no testnet, so
-against this testnet hub the quote is real (mainnet assets, live solver prices) but no deposit
-address is issued; `--execute` is only accepted against a mainnet hub. `customRecipientMsg` is
+against this testnet hub the quote is real (mainnet assets, live solver prices, a stand-in mainnet
+recipient because 1Click checks the account exists) but no deposit address is issued; `--execute` is only accepted against a mainnet hub. `customRecipientMsg` is
 marked experimental by NEAR Intents, and the hub must hold a storage deposit on the token (it
 does). Member payouts go the other way with the same API: `withdraw` to the owner's NEAR
 account, then a quote to the chain of their choice.

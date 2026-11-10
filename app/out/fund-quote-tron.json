@@ -1,0 +1,31 @@
+{
+  "request": {
+    "dry": true,
+    "swapType": "EXACT_OUTPUT",
+    "slippageTolerance": 50,
+    "originAsset": "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near",
+    "depositType": "ORIGIN_CHAIN",
+    "destinationAsset": "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+    "amount": "120000000",
+    "refundTo": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
+    "refundType": "ORIGIN_CHAIN",
+    "recipient": "intents.near",
+    "recipientType": "DESTINATION_CHAIN",
+    "customRecipientMsg": "{\"skill\":\"document-extraction\",\"min_level\":2,\"min_rank\":0,\"require_proof\":false,\"review_days\":5,\"spec_uri\":\"samples/job-invoices.json#sha256=551606c228190317cc3a90d8f889e41a87accbadec7d322eab2a4cba7480e27d\",\"client\":\"alice.near\"}",
+    "deadline": "2026-11-10T19:03:06.194Z",
+    "referral": "guildhall"
+  },
+  "quote": {
+    "amountIn": "120741174",
+    "amountInFormatted": "120.741174",
+    "amountInUsd": "120.651463307718",
+    "minAmountIn": "120137468",
+    "amountOut": "120000000",
+    "amountOutFormatted": "120.0",
+    "amountOutUsd": "119.953080000000",
+    "minAmountOut": "120000000",
+    "timeEstimate": 82,
+    "refundFee": "866989",
+    "withdrawFee": "0"
+  }
+}

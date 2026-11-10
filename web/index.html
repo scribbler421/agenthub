@@ -492,7 +492,7 @@
       <p>A client does not need a NEAR wallet. Through <a class="term" tabindex="0" data-tip="NEAR's cross-chain settlement layer: you say what you want on which chain, solvers compete to fill it. The 1Click API gives a quote and a deposit address; the tokens arrive on NEAR and can be delivered straight into the hub with the contract's funding message.">NEAR Intents</a>, USDC on Base, Ethereum, Arbitrum or Solana (or USDT on Tron) is sent to a one-time deposit address and arrives in the hub as USDC on NEAR through <code>ft_transfer_call</code>, which creates the contract in the same step. Live quote below, from mainnet solvers:</p>
       <form id="fundform" class="fundform">
         <label>From <select id="fund-from"><option value="base">USDC on Base</option><option value="eth">USDC on Ethereum</option><option value="arb">USDC on Arbitrum</option><option value="sol">USDC on Solana</option><option value="tron">USDT on Tron</option></select></label>
-        <label>Budget <input id="fund-amount" type="number" min="1" step="1" value="25" inputmode="numeric"> USDC</label>
+        <label>Budget <input id="fund-amount" type="number" min="100" step="1" value="120" inputmode="numeric"> USDC</label>
         <label>Needs <select id="fund-level"><option value="1">Bronze seal</option><option value="2">Silver seal</option><option value="3">Gold seal</option></select></label>
         <button type="submit" id="fund-go">GET QUOTE</button>
       </form>
@@ -761,7 +761,7 @@
         if (!tokenList) { try { tokenList = await (await fetch(`${ONECLICK}/v0/tokens`)).json(); } catch { tokenList = []; } }
         const origin = tokenList.find((t) => t.symbol === sym && t.blockchain === chain)?.assetId ?? fallback;
         const msg = JSON.stringify({ skill: "document-extraction", min_level: level, spec_uri: "samples/job-invoices.json#sha256=…", client: "client.near" });
-        const body = { dry: true, swapType: "EXACT_OUTPUT", slippageTolerance: 50, originAsset: origin, depositType: "ORIGIN_CHAIN", destinationAsset: NEAR_USDC, amount: String(amount * 1_000_000), refundTo: "0x0000000000000000000000000000000000000000", refundType: "ORIGIN_CHAIN", recipient: state.hub.replace(/\.testnet$/, ".near"), recipientType: "DESTINATION_CHAIN", customRecipientMsg: msg, deadline: new Date(Date.now() + 30 * 60_000).toISOString(), referral: "guildhall" };
+        const body = { dry: true, swapType: "EXACT_OUTPUT", slippageTolerance: 50, originAsset: origin, depositType: "ORIGIN_CHAIN", destinationAsset: NEAR_USDC, amount: String(amount * 1_000_000), refundTo: { base: "0x1111111111111111111111111111111111111111", eth: "0x1111111111111111111111111111111111111111", arb: "0x1111111111111111111111111111111111111111", sol: "C7LFNsL593nrJ7XS5SR3Ta5ugvTDcB7JnV6CuD65cRkF", tron: "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf" }[from], refundType: "ORIGIN_CHAIN", recipient: state.hub.endsWith(".testnet") ? "intents.near" : state.hub, recipientType: "DESTINATION_CHAIN", customRecipientMsg: msg, deadline: new Date(Date.now() + 30 * 60_000).toISOString(), referral: "guildhall" };
         const r = await fetch(`${ONECLICK}/v0/quote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const j = await r.json();
         if (!r.ok) throw new Error(j.message || `quote failed (${r.status})`);
@@ -770,7 +770,7 @@
           <div><div class="n">${(Number(Q.amountOut) / 1e6).toFixed(2)} USDC</div><div class="l">arrives in the hub on NEAR</div></div>
           <div><div class="n">${(Number(Q.amountInFormatted) - Number(Q.amountOutFormatted)).toFixed(3)} ${unit}</div><div class="l">solver + relay fee</div></div>
           <div><div class="n">~${Math.round(Q.timeEstimate / 60) || 1} min</div><div class="l">after your deposit confirms</div></div>
-          <div class="wide">On arrival the hub runs <code>ft_on_transfer</code> with the funding message and opens a ${LEVEL[level]}-seal contract for the named client — no NEAR wallet involved. Quoted ${new Date().toLocaleTimeString()} by NEAR Intents (dry run: no deposit address on testnet).</div>`;
+          <div class="wide">On arrival the hub runs <code>ft_on_transfer</code> with the funding message and opens a ${LEVEL[level]}-seal contract for the named client — no NEAR wallet involved. Quoted ${new Date().toLocaleTimeString()} by NEAR Intents (dry run against a stand-in mainnet recipient: no deposit address on testnet).</div>`;
       } catch (err) {
         q.innerHTML = `<div class="err">Could not get a quote: ${esc(String(err.message || err))}. The quote service may block browser requests; the same quote runs from the repo with <code>npm run fund -- --from ${esc(from)} --amount ${amount}</code>.</div>`;
       } finally { $("fund-go").disabled = false; }
