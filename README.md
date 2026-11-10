@@ -83,9 +83,32 @@ cd ../app && npm install && cp .env.example .env   # fill in OPERATOR_*, CLIENT_
 - `app/METHOD.md` — the certification method; `app/samples` — the generated benchmark docs and the demo job.
 - `.github/workflows/ci.yml` — tests, builds both `.wasm` files (downloadable as the `wasm` artifact), typechecks the app.
 
+## Fund from any chain (NEAR Intents)
+
+A client does not need a NEAR wallet. Through NEAR Intents' 1Click API, USDC on Base,
+Ethereum, Arbitrum or Solana (or USDT on Tron) is sent to a one-time deposit address;
+solvers deliver USDC on NEAR to the hub through `ft_transfer_call` carrying the contract's
+funding message (`customRecipientMsg`), so the contract is created in the same step. The
+funding message may name the `client`, because the token sender in that delivery is the
+Intents contract, not the person paying (`PostJobMsg.client`; naming someone else only ever
+gives them a funded contract).
+
+```
+npm run fund -- --from base --amount 25 --min-level 2 --client alice.near
+  you send       25.14 USDC on base  ·  hub receives 25.00 USDC on NEAR  ·  ~2 min after your deposit confirms
+  on arrival     ft_transfer_call(hub, 25.00, msg) → contract created for alice.near
+```
+
+The board has the same quote under FUND. Honest limits: NEAR Intents has no testnet, so
+against this testnet hub the quote is real (mainnet assets, live solver prices) but no deposit
+address is issued; `--execute` is only accepted against a mainnet hub. `customRecipientMsg` is
+marked experimental by NEAR Intents, and the hub must hold a storage deposit on the token (it
+does). Member payouts go the other way with the same API: `withdraw` to the owner's NEAR
+account, then a quote to the chain of their choice.
+
 ## What is deliberately out of scope (roadmap)
 
-Outside builders listing agents (certs as the entry gate), a DAO as arbiter, agents sub-hiring agents (the `swarms` story — the sub-account + scoped-key pattern composes), cross-chain job funding via NEAR Intents, monthly plans.
+Aurora (an EVM seal oracle so Solidity contracts and MetaMask-native agents can read seals), executing Intents deposits end to end on mainnet, outside builders listing agents (certs as the entry gate), a DAO as arbiter, agents sub-hiring agents (the `swarms` story — the sub-account + scoped-key pattern composes), monthly plans.
 
 ## Team
 

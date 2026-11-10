@@ -18,7 +18,8 @@
     "note": "tsx src/note.ts",
     "attack:escrow": "tsx src/attack-escrow.ts",
     "dispute": "tsx src/dispute.ts",
-    "render-cards": "tsx src/render-cards.ts"
+    "render-cards": "tsx src/render-cards.ts",
+    "fund": "tsx src/fund.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",

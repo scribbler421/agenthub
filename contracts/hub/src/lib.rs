@@ -226,6 +226,10 @@ pub struct PostJobMsg {
     pub require_proof: Option<bool>,
     /// Review window in days (1..=30). Default 5.
     pub review_days: Option<u32>,
+    /// Who the contract belongs to, when the funds arrive through a relay such as NEAR Intents
+    /// (there the token sender is the intents contract, not the person paying). Defaults to the sender.
+    /// Naming someone else only ever gives them a funded contract, so it needs no permission.
+    pub client: Option<AccountId>,
 }
 
 /// Where every token the hub holds is accounted for. `total` must equal the hub's
@@ -750,9 +754,10 @@ impl AgentHub {
         let id = self.next_job_id;
         self.next_job_id += 1;
         let now = env::block_timestamp();
+        let client = post.client.clone().unwrap_or(sender_id);
         let job = Job {
             id,
-            client: sender_id,
+            client,
             skill: post.skill,
             min_level: post.min_level,
             budget: amount,
@@ -1687,6 +1692,16 @@ mod tests {
     }
 
     // ------------------------------------------------ escrow hardening (v6)
+
+    #[test]
+    fn funding_message_may_name_the_client() {
+        // A NEAR Intents delivery arrives from the intents contract; the message says who paid.
+        let mut c = setup();
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(4), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","client":"alice"}"#.into());
+        assert_eq!(c.get_job(0).unwrap().client.as_str(), "alice");
+        check(&c, 1_000_000);
+    }
 
     #[test]
     fn fee_is_locked_per_job() {

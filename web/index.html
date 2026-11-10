@@ -326,6 +326,20 @@
   @keyframes fadein { from { opacity: 0; } }
   @media (max-width: 600px) { .term::after { left: 0; transform: none; max-width: 80vw; } }
 
+  /* ---- fund from any chain ---- */
+  .fund p { margin: 0 0 14px; max-width: 900px; }
+  .fund .fine { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .fundform { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; padding: 14px; border: 1px solid var(--line); background: rgba(var(--text-rgb),0.04); }
+  .fundform label { display: grid; gap: 4px; font-family: var(--font-display); font-size: 11px; letter-spacing: 0.18em; color: var(--muted); }
+  .fundform select, .fundform input { font: inherit; font-size: 16px; padding: 7px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--line); color: var(--text); min-width: 150px; }
+  .fundform input { width: 110px; min-width: 0; }
+  .quote { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .quote[hidden] { display: none; }
+  .quote > div { padding: 12px 14px; background: var(--panel); }
+  .quote .n { font-family: var(--font-display); font-size: 20px; color: var(--gold); }
+  .quote .l { font-size: 14px; color: var(--muted); }
+  .quote .wide { grid-column: 1 / -1; font-size: 15px; color: var(--text); }
+  .quote .err { grid-column: 1 / -1; color: var(--bad); }
   /* ---- trials section ---- */
   .trials { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
   .trials > div { padding: 18px 20px; background: var(--panel); font-size: 16px; }
@@ -376,7 +390,7 @@
 <main>
   <header>
     <div class="brand"><h1>GUILDHALL</h1><span class="sub">THE ROLL</span></div>
-    <nav id="nav"><a href="#about">WHAT IS THIS</a><a href="#hall">HALL</a><a href="#roll">ROLL</a><a href="#contracts">CONTRACTS</a><a href="#trials">TRIALS</a><a href="#proofs">SEALED PROOFS</a></nav>
+    <nav id="nav"><a href="#about">WHAT IS THIS</a><a href="#hall">HALL</a><a href="#roll">ROLL</a><a href="#contracts">CONTRACTS</a><a href="#fund">FUND</a><a href="#trials">TRIALS</a><a href="#proofs">SEALED PROOFS</a></nav>
     <div style="display:flex;align-items:center;gap:18px">
     <button type="button" id="theme" class="btn ghost" style="height:34px;padding:0 12px;font-size:11px" aria-label="Switch between day and night">NIGHT ☾</button>
     <details class="advanced"><summary>ADVANCED</summary>
@@ -469,6 +483,21 @@
         <thead><tr><th class="sortable" data-sort="id">#</th><th class="sortable" data-sort="status">STATUS</th><th class="sortable" data-sort="seal">REQUIRES</th><th>CLIENT</th><th class="sortable" data-sort="member">MEMBER</th><th class="sortable" data-sort="budget" style="text-align:right">BUDGET</th><th style="text-align:right">RATING</th><th>PROOF</th><th class="sortable" data-sort="updated">UPDATED</th></tr></thead>
         <tbody id="jobs"><tr><td colspan="9"><div class="skeleton"></div></td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <section id="fund" class="plate">
+    <h2>FUND FROM ANY CHAIN</h2>
+    <div class="fund">
+      <p>A client does not need a NEAR wallet. Through <a class="term" tabindex="0" data-tip="NEAR's cross-chain settlement layer: you say what you want on which chain, solvers compete to fill it. The 1Click API gives a quote and a deposit address; the tokens arrive on NEAR and can be delivered straight into the hub with the contract's funding message.">NEAR Intents</a>, USDC on Base, Ethereum, Arbitrum or Solana (or USDT on Tron) is sent to a one-time deposit address and arrives in the hub as USDC on NEAR through <code>ft_transfer_call</code>, which creates the contract in the same step. Live quote below, from mainnet solvers:</p>
+      <form id="fundform" class="fundform">
+        <label>From <select id="fund-from"><option value="base">USDC on Base</option><option value="eth">USDC on Ethereum</option><option value="arb">USDC on Arbitrum</option><option value="sol">USDC on Solana</option><option value="tron">USDT on Tron</option></select></label>
+        <label>Budget <input id="fund-amount" type="number" min="1" step="1" value="25" inputmode="numeric"> USDC</label>
+        <label>Needs <select id="fund-level"><option value="1">Bronze seal</option><option value="2">Silver seal</option><option value="3">Gold seal</option></select></label>
+        <button type="submit" id="fund-go">GET QUOTE</button>
+      </form>
+      <div class="quote" id="fundquote" hidden></div>
+      <p class="fine">Quotes are real (mainnet assets, live solver prices). Executing needs a mainnet hub; this hall runs on testnet, where NEAR Intents has no counterpart, so no deposit address is issued here. <code>customRecipientMsg</code> is marked experimental by NEAR Intents.</p>
     </div>
   </section>
 
@@ -715,6 +744,38 @@
     }
   }
   $("retry").addEventListener("click", () => load(state.hub));
+
+  // Fund from any chain: a live 1Click (NEAR Intents) quote for delivering USDC into the hub.
+  (() => {
+    const ONECLICK = "https://1click.chaindefuser.com";
+    const NEAR_USDC = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+    const ORIGINS = { base: ["USDC", "base", "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near"], eth: ["USDC", "eth", "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"], arb: ["USDC", "arb", "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near"], sol: ["USDC", "sol", "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near"], tron: ["USDT", "tron", "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near"] };
+    let tokenList = null;
+    $("fundform").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const from = $("fund-from").value, amount = Math.max(1, Math.floor(Number($("fund-amount").value) || 0)), level = Number($("fund-level").value);
+      const q = $("fundquote"); q.hidden = false; q.innerHTML = `<div class="wide"><span class="quillspin" style="display:inline-block;vertical-align:middle;margin-right:10px"></span>Asking NEAR Intents solvers for a price…</div>`;
+      $("fund-go").disabled = true;
+      try {
+        const [sym, chain, fallback] = ORIGINS[from];
+        if (!tokenList) { try { tokenList = await (await fetch(`${ONECLICK}/v0/tokens`)).json(); } catch { tokenList = []; } }
+        const origin = tokenList.find((t) => t.symbol === sym && t.blockchain === chain)?.assetId ?? fallback;
+        const msg = JSON.stringify({ skill: "document-extraction", min_level: level, spec_uri: "samples/job-invoices.json#sha256=…", client: "client.near" });
+        const body = { dry: true, swapType: "EXACT_OUTPUT", slippageTolerance: 50, originAsset: origin, depositType: "ORIGIN_CHAIN", destinationAsset: NEAR_USDC, amount: String(amount * 1_000_000), refundTo: "0x0000000000000000000000000000000000000000", refundType: "ORIGIN_CHAIN", recipient: state.hub.replace(/\.testnet$/, ".near"), recipientType: "DESTINATION_CHAIN", customRecipientMsg: msg, deadline: new Date(Date.now() + 30 * 60_000).toISOString(), referral: "guildhall" };
+        const r = await fetch(`${ONECLICK}/v0/quote`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.message || `quote failed (${r.status})`);
+        const Q = j.quote, unit = sym;
+        q.innerHTML = `<div><div class="n">${esc(Q.amountInFormatted)} ${unit}</div><div class="l">you send on ${esc(chain)}</div></div>
+          <div><div class="n">${(Number(Q.amountOut) / 1e6).toFixed(2)} USDC</div><div class="l">arrives in the hub on NEAR</div></div>
+          <div><div class="n">${(Number(Q.amountInFormatted) - Number(Q.amountOutFormatted)).toFixed(3)} ${unit}</div><div class="l">solver + relay fee</div></div>
+          <div><div class="n">~${Math.round(Q.timeEstimate / 60) || 1} min</div><div class="l">after your deposit confirms</div></div>
+          <div class="wide">On arrival the hub runs <code>ft_on_transfer</code> with the funding message and opens a ${LEVEL[level]}-seal contract for the named client — no NEAR wallet involved. Quoted ${new Date().toLocaleTimeString()} by NEAR Intents (dry run: no deposit address on testnet).</div>`;
+      } catch (err) {
+        q.innerHTML = `<div class="err">Could not get a quote: ${esc(String(err.message || err))}. The quote service may block browser requests; the same quote runs from the repo with <code>npm run fund -- --from ${esc(from)} --amount ${amount}</code>.</div>`;
+      } finally { $("fund-go").disabled = false; }
+    });
+  })();
 
   // Day / night. Follows the system until the visitor picks; the pick is remembered on this device.
   (() => {
