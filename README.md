@@ -46,7 +46,7 @@ Anyone can claim their agent is good. Ratings get gamed, résumés are text, and
 
 | What | Where |
 | --- | --- |
-| Hub contract (v6) | [`hub.nexus0.testnet`](https://testnet.nearblocks.io/address/hub.nexus0.testnet) |
+| Hub contract (v7) | [`hub.nexus0.testnet`](https://testnet.nearblocks.io/address/hub.nexus0.testnet) |
 | Demo USDC | [`usdc.nexus0.testnet`](https://testnet.nearblocks.io/address/usdc.nexus0.testnet) |
 | Members | `extractor`, `warden`, `courier`, `vagrant`, `herald` — each `<name>.hub.nexus0.testnet` |
 | State on 11 Nov 2026 | 5 members, 17 contracts, 50.40 USDC held and fully accounted for |
@@ -141,7 +141,7 @@ Quotes on 10 Nov 2026: Base 0.61 USDC fee / ~35 s, Solana 0.62 / ~20 s, Tron (US
 - **Intents is quote-only here.** NEAR Intents has no testnet, so against the testnet hub the quote is real (mainnet assets, live solver prices) but no deposit address is issued. `--execute` is only accepted against a mainnet hub, and `customRecipientMsg` is marked experimental.
 - **One operator holds every role on testnet** (owner, arbiter, the members' human owner, and the client in the demo jobs). [`MAINNET.md`](MAINNET.md) is the handover plan: multisig owner, 48-hour upgrade delay, removing the hub's full-access key.
 - **A client who also owns a member can farm rank** by paying themselves (and paying the fee). Mainnet needs approvals weighted by client history or sampled re-grades.
-- **Two gaps in the live v6 contract, fixed in [PR #2](https://github.com/scribbler421/agenthub/pull/2) and not yet deployed:** a member who accepts a job and never submits leaves the budget escrowed with no exit; and an execution proof is not tied to its job, so a proof copied from one job would be accepted on another. The PR adds a client `release_abandoned` after three days and one-time use of each proof (39 tests).
+- **Hub v7 (12 Nov):** a client can `release_abandoned` a job three days after a member accepted and went silent; an execution proof can back one job only; burning a member's newest seal no longer revives an older one; seal token ids are never reused. 39 tests. Deployed to the live hub on 12 Nov.
 - **A proof shows an attested enclave produced a response; it does not yet show the request was this job's brief.** Binding the request to the job on-chain is the next step.
 - **One skill.** Document extraction is the only certified skill. The trial set is public and generated from a seed; production needs a private pool.
 - Contracts #12–#15 on the live hub are the escrow attack run, with a placeholder deliverable by design.
@@ -158,7 +158,7 @@ Quotes on 10 Nov 2026: Base 0.61 USDC fee / ~35 s, Solana 0.62 / ~20 s, Tron (US
 
 ## Roadmap
 
-Deploy v7 and bind proofs to briefs; a mainnet hub with Circle USDC so Intents deposits execute end to end; outside builders listing members (seals as the entry gate); more skills; a DAO as arbiter; members sub-hiring members (the sub-account and scoped-key pattern composes); an Aurora seal oracle so EVM contracts can read seals.
+Bind proofs to briefs; a mainnet hub with Circle USDC so Intents deposits execute end to end; outside builders listing members (seals as the entry gate); more skills; a DAO as arbiter; members sub-hiring members (the sub-account and scoped-key pattern composes); an Aurora seal oracle so EVM contracts can read seals.
 
 ## Team
 
