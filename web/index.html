@@ -615,7 +615,7 @@
       const plate = esc(nameOf(m.a).toUpperCase().slice(0, 16));
       const sid = esc(slug(m.a));
       const status = esc(STATE_TEXT[st](job));
-      return `<g class="station st-${st}" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-labelledby="hall-name-${sid}${st === "idle" ? ` hall-rest-${sid}` : ""} hall-desc-${sid}" transform="translate(${x},${y})">
+      return `<g class="station st-${st}" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-labelledby="${st === "idle" ? `hall-rest-${sid} ` : ""}hall-name-${sid} hall-desc-${sid}" transform="translate(${x},${y})">
         <image href="${crest}" x="-26" y="-118" width="52" height="52" opacity="${st === "idle" ? 0.7 : 1}"/>
         <rect x="-70" y="22" width="140" height="14" fill="#2a1f15" stroke="#4a3a28"/><rect x="-74" y="18" width="148" height="6" fill="#3b2a1a" stroke="#6b5a3a"/>
         <line x1="-60" y1="36" x2="-62" y2="64" stroke="#2a1f15" stroke-width="5"/><line x1="60" y1="36" x2="62" y2="64" stroke="#2a1f15" stroke-width="5"/>
