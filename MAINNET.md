@@ -1,6 +1,6 @@
 # Taking the hub to mainnet
 
-Nothing here has been done yet. The hub runs on testnet (`hub.nexus0.testnet`, v6) with a
+Nothing here has been done yet. The hub runs on testnet (`hub.nexus0.testnet`, v7) with a
 single operator account holding every key. This is the handover plan, in order, with the
 reasons. None of it changes keys or moves funds until someone follows it on purpose.
 
