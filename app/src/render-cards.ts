@@ -1,8 +1,8 @@
 // Renders every member's share card from the live chain and writes static share pages:
 //   web/cards/<name>.png      the holo card (750x1050)
-//   web/cards/<name>-og.png   landscape preview (1200x630) for X / Slack / Discord unfurls
+//   web/cards/<name>-og.jpg   landscape preview (1200x630) for X / Slack / Discord unfurls
 //   web/cards/<name>.html     og:image + twitter:card tags, then forwards to the board (#m=<name>)
-//   web/art/og.png            the site-wide preview (the title hero)
+//   web/art/og.jpg            the site-wide preview (the title hero)
 // Link previews are fetched by crawlers without running JavaScript, so these have to be files.
 //   npm run render-cards
 // Runs in CI (.github/workflows/cards.yml) on every push and every 6 hours.
@@ -31,7 +31,7 @@ async function main() {
   await page.waitForTimeout(3500);
   await page.mouse.move(820, 300);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(WEB, "art", "og.png"), clip: { x: 0, y: 0, width: 1200, height: 630 } });
+  await page.screenshot({ path: path.join(WEB, "art", "og.jpg"), type: "jpeg", quality: 88, clip: { x: 0, y: 0, width: 1200, height: 630 } });
   await page.setViewportSize({ width: 1362, height: 1000 });
 
   for (const a of agents) {
@@ -51,9 +51,9 @@ async function main() {
     await page.waitForFunction("window.__cardReady === true", null, { timeout: 30_000 });
     await page.waitForTimeout(400);
     const card: string = await page.evaluate("document.getElementById('cardcanvas').toDataURL('image/png')");
-    const og: string = await page.evaluate("window.__guildhall.renderOg()");
+    const og: string = await page.evaluate("window.__guildhall.renderOg().then((u) => { const c = document.createElement('canvas'); const i = new Image(); return new Promise((res) => { i.onload = () => { c.width = i.width; c.height = i.height; c.getContext('2d').drawImage(i, 0, 0); res(c.toDataURL('image/jpeg', 0.88)); }; i.src = u; }); })");
     fs.writeFileSync(path.join(OUT, `${slug}.png`), Buffer.from(card.split(",")[1], "base64"));
-    fs.writeFileSync(path.join(OUT, `${slug}-og.png`), Buffer.from(og.split(",")[1], "base64"));
+    fs.writeFileSync(path.join(OUT, `${slug}-og.jpg`), Buffer.from(og.split(",")[1], "base64"));
 
     // One at a time: the page above has just made its own burst of reads against the same RPC.
     const certs = await view(hub, "get_certs", { agent: a.account });
@@ -73,8 +73,8 @@ async function main() {
 <meta property="og:type" content="profile"><meta property="og:site_name" content="Guildhall">
 <meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}">
 <meta property="og:url" content="${SITE}/cards/${slug}">
-<meta property="og:image" content="${SITE}/cards/${slug}-og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${SITE}/cards/${slug}-og.png">
+<meta property="og:image" content="${SITE}/cards/${slug}-og.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${SITE}/cards/${slug}-og.jpg">
 <meta http-equiv="refresh" content="0; url=/#m=${slug}">
 <style>body{margin:0;background:#0b0c0e;color:#d9d4c7;font:16px Georgia,serif;display:grid;place-items:center;min-height:100vh}a{color:#cdb878}</style>
 </head><body><p>Opening ${esc(name)} in the Guildhall… <a href="/#m=${slug}">continue</a></p>
