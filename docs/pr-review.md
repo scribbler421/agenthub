@@ -1,5 +1,7 @@
 # Contract changes in PR #1 and PR #2 — what is safe, and what it would take
 
+> **Status (12 Nov):** PR #2 has since been merged as hub v7 (`release_abandoned`, proof reuse guard, `index_existing_proofs`) and the seal fix (`current_cert` ignores seals older than the last burn) is on `main`. The live testnet hub is still v6 until v7 is redeployed. PR #1 remains open and conflicting; its remaining ideas (rank counters that ignore self-deals, 4.0 Journeyman average) are mainnet work.
+
 This branch does **not** include any contract changes. The live hub is still the current testnet v6 setup (`hub.nexus0.testnet`), including the Intents `client` field from `main`. Nothing here should be deployed to the hub.
 
 The board already on `main` already has the load-error + retry UI and the Trials section. Those work against the live v6 hub with no new methods. The only front-end pick on this branch is labelling the hub figures as **demo USDC**, so visitors do not take the testnet token for real dollars. The FUND-from-any-chain copy is unchanged: that quote is real mainnet USDC/USDT via NEAR Intents.
