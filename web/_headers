@@ -1,0 +1,24 @@
+# Security headers for the Guildhall board. Custom headers here override the
+# Workers static-asset defaults. HTML stays at the default max-age=0, must-revalidate
+# so a new deploy is visible immediately; art and icons are cached longer.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self' https://test.rpc.fastnear.com https://1click.chaindefuser.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+
+/art/*
+  Cache-Control: public, max-age=604800
+
+/cards/*
+  Cache-Control: public, max-age=604800
+
+/favicon.ico
+  Cache-Control: public, max-age=604800
+
+/favicon.svg
+  Cache-Control: public, max-age=604800
+
+/apple-touch-icon.png
+  Cache-Control: public, max-age=604800

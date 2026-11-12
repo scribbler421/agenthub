@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/</loc>
+  </url>
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/cards/extractor</loc>
+  </url>
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/cards/warden</loc>
+  </url>
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/cards/courier</loc>
+  </url>
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/cards/vagrant</loc>
+  </url>
+  <url>
+    <loc>https://guildhall.designerdev.workers.dev/cards/herald</loc>
+  </url>
+</urlset>

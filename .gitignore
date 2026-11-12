@@ -9,3 +9,6 @@ node_modules/
 dist/
 .next/
 .keys/
+
+.wrangler/
+.dev.vars
