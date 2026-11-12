@@ -626,7 +626,9 @@ impl AgentHub {
         require!(self.agents.get(&agent).is_some(), "unknown agent");
 
         let mut certs = self.certs.get(&agent).cloned().unwrap_or_default();
-        let round = certs.iter().filter(|c| c.skill == skill).count() + 1;
+        // Round numbers never repeat: burned seals count too, so a token id is never reused.
+        let burned = self.revocations.get(&agent).map_or(0, |r| r.iter().filter(|x| x.skill == skill).count());
+        let round = certs.iter().filter(|c| c.skill == skill).count() + burned + 1;
         let now = env::block_timestamp();
         let cert = Cert {
             token_id: format!("{}:{}:{}", skill, agent, round),
@@ -680,13 +682,15 @@ impl AgentHub {
     /// replaces the seal, it never stacks on top of a better earlier result.
     pub fn current_cert(&self, agent: AccountId, skill: String) -> Option<Cert> {
         let now = env::block_timestamp();
-        self.certs.get(&agent).and_then(|certs| {
-            certs
-                .iter()
-                .filter(|c| c.skill == skill && c.expires_at > now)
-                .max_by_key(|c| c.issued_at)
-                .cloned()
-        })
+        // The newest seal for the skill is the member's seal, full stop. If it has expired there is
+        // no seal; if the newest one was burned, an older seal does not come back (a revocation
+        // newer than the newest remaining seal means the member's last word was a failure).
+        let newest = self.certs.get(&agent).and_then(|certs| certs.iter().filter(|c| c.skill == skill).max_by_key(|c| c.issued_at).cloned());
+        let last_burn = self.revocations.get(&agent).and_then(|r| r.iter().filter(|x| x.skill == skill).map(|x| x.revoked_at).max());
+        match newest {
+            Some(c) if c.expires_at > now && last_burn.map_or(true, |b| b < c.issued_at) => Some(c),
+            _ => None,
+        }
     }
 
     /// True if `agent`'s current seal for `skill` is at >= `min_level`.
@@ -1599,15 +1603,23 @@ mod tests {
         assert!(c.is_certified(agent(), "document-extraction".into(), 1));
         assert_eq!(c.current_cert(agent(), "document-extraction".into()).unwrap().level, 1);
         assert_eq!(c.get_certs(agent()).len(), 2, "history is kept");
-        // Revoking the current seal falls back to nothing, not to the old Gold.
+        // Burning the current (Bronze) seal must not bring the older Gold back.
         testing_env!(ctx(accounts(0)).block_timestamp(3).build());
-        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into(), None);
         c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:2".into(), Some("failed re-trial".into()));
+        assert!(c.current_cert(agent(), "document-extraction".into()).is_none(), "an older seal must not revive");
+        assert!(!c.is_certified(agent(), "document-extraction".into(), 1));
+        assert_eq!(c.get_certs(agent()).len(), 1, "the old Gold stays on the record");
+        // A new trial after the burn is the seal again.
+        testing_env!(ctx(accounts(0)).block_timestamp(4).build());
+        c.mint_cert(agent(), "document-extraction".into(), 2, "".into());
+        assert_eq!(c.current_cert(agent(), "document-extraction".into()).unwrap().level, 2);
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:1".into(), None);
+        c.revoke_cert(agent(), "document-extraction:extractor.hub.testnet:3".into(), None);
         assert!(!c.is_certified(agent(), "document-extraction".into(), 1));
         let revs = c.get_revocations(agent());
-        assert_eq!(revs.len(), 2);
-        assert_eq!(revs[1].reason, "failed re-trial");
-        assert_eq!(revs[1].level, 1);
+        assert_eq!(revs.len(), 3);
+        assert_eq!(revs[0].reason, "failed re-trial");
+        assert_eq!(revs[0].level, 1);
     }
 
     #[test]
