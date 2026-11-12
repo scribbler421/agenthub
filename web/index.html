@@ -62,7 +62,7 @@
     --faint: rgba(42, 33, 22, 0.42);
     --line: rgba(120, 95, 55, 0.4);
     --brass: #8a6a1f;
-    --gold: #a9801d;
+    --gold: #7a5a12;
     --seal: #2b5fb3;
     --good: #2f7d3f;
     --bad: #a63a2a;
@@ -71,7 +71,7 @@
   @media (prefers-color-scheme: light) { :root:not([data-theme="night"]) {
     --ink: #ece2cc; --panel: rgba(255, 250, 240, 0.72); --panel-solid: #f7f1e3; --text: #2a2116; --text-rgb: 42, 33, 22; --bright: #140f08;
     --ivory: #2a2116; --ivory-rgb: 42, 33, 22; --muted: rgba(42, 33, 22, 0.74); --faint: rgba(42, 33, 22, 0.42); --line: rgba(120, 95, 55, 0.4);
-    --brass: #8a6a1f; --gold: #a9801d; --seal: #2b5fb3; --good: #2f7d3f; --bad: #a63a2a; color-scheme: light; } }
+    --brass: #8a6a1f; --gold: #7a5a12; --seal: #2b5fb3; --good: #2f7d3f; --bad: #a63a2a; color-scheme: light; } }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
   body { background: var(--ink); color: var(--text); font-family: var(--font-body); font-size: 17px; line-height: 1.5; min-height: 100vh; position: relative; }
@@ -102,7 +102,7 @@
   input { font: inherit; font-size: 15px; padding: 6px 10px; background: rgba(0,0,0,0.4); border: 1px solid var(--line); color: var(--text); min-width: 220px; }
   button, .btn { font-family: var(--font-display); font-size: 12px; letter-spacing: 0.18em; padding: 0 18px; height: 40px; display: inline-flex; align-items: center; cursor: pointer; text-decoration: none; }
   button { background: var(--ivory); color: var(--ink); border: 0; }
-  :root[data-theme="day"] button, :root:not([data-theme="night"]) button { color: #f7f1e3; }
+  :root[data-theme="day"] button:not(.row):not(.linkish):not(.clear), :root:not([data-theme="night"]) button:not(.row):not(.linkish):not(.clear) { color: #f7f1e3; }
   :root[data-theme="night"] button { color: var(--ink); }
   .btn.ghost { background: transparent; color: var(--ivory); border: 1px solid rgba(var(--ivory-rgb),0.5); }
   button:focus-visible, .btn:focus-visible, input:focus-visible, .row:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
@@ -611,7 +611,10 @@
     const stY = (i) => 150 + Math.floor(i / cols) * 170;
     const figure = (x, y, m) => {
       const [st, job] = m.st, crest = `art/rank-${m.d.rank.rank}.png`, sealed = m.d.sealed, glow = st === "working";
-      return `<g class="station st-${st}" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-label="${esc(nameOf(m.a).toUpperCase().slice(0, 16))}${st === "idle" ? " RESTING" : ""}: ${esc(STATE_TEXT[st](job))}" transform="translate(${x},${y})">
+      const plate = esc(nameOf(m.a).toUpperCase().slice(0, 16));
+      const sid = esc(slug(m.a));
+      const status = esc(STATE_TEXT[st](job));
+      return `<g class="station st-${st}" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-labelledby="hall-name-${sid}${st === "idle" ? ` hall-rest-${sid}` : ""} hall-desc-${sid}" transform="translate(${x},${y})">
         <image href="${crest}" x="-26" y="-118" width="52" height="52" opacity="${st === "idle" ? 0.7 : 1}"/>
         <rect x="-70" y="22" width="140" height="14" fill="#2a1f15" stroke="#4a3a28"/><rect x="-74" y="18" width="148" height="6" fill="#3b2a1a" stroke="#6b5a3a"/>
         <line x1="-60" y1="36" x2="-62" y2="64" stroke="#2a1f15" stroke-width="5"/><line x1="60" y1="36" x2="62" y2="64" stroke="#2a1f15" stroke-width="5"/>
@@ -619,15 +622,16 @@
         ${glow ? `<ellipse class="glow" cx="-14" cy="12" rx="40" ry="14" fill="${sealed ? "rgba(96,160,255,0.35)" : "rgba(244,182,74,0.3)"}"/>` : ""}
         <g class="scroll" transform="translate(-30,6)"><rect x="-14" y="-8" width="30" height="16" rx="2" fill="#d9d4c7" stroke="#8b7b55"/><line x1="-9" y1="-3" x2="10" y2="-3" stroke="#8b7b55" stroke-width="1"/><line x1="-9" y1="1" x2="6" y2="1" stroke="#8b7b55" stroke-width="1"/>${sealed ? `<circle cx="10" cy="4" r="3.5" fill="#7a1f1f"/>` : ""}</g>
         <g class="body" transform="translate(0,-10)"><path d="M-22 30 Q-24 -6 0 -14 Q24 -6 22 30 Z" fill="#1b1d23" stroke="#3a3d47"/><path d="M-13 -2 Q0 -26 13 -2 Q0 4 -13 -2 Z" fill="#101114"/><g class="head">${face(m.a) ? `<clipPath id="clip-${esc(slug(m.a))}"><circle cx="0" cy="-14" r="17"/></clipPath><circle cx="0" cy="-14" r="18.5" fill="#0b0c0e" stroke="${sealed ? "#9fc4ff" : "#cdb878"}" stroke-width="1.5"/><image href="${face(m.a)}" x="-17" y="-31" width="34" height="34" clip-path="url(#clip-${esc(slug(m.a))})"/>` : `<ellipse cx="0" cy="-12" rx="11" ry="12" fill="#2a2c33"/><path d="M-11 -12 Q0 -30 11 -12 Q0 -8 -11 -12Z" fill="#1b1d23"/><rect x="-5" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/><rect x="2" y="-14" width="3" height="2" fill="${sealed ? "#9fc4ff" : "#e8e1cf"}"/>`}</g><g class="quill"><line x1="-18" y1="12" x2="-30" y2="-6" stroke="#e8e1cf" stroke-width="2"/><path d="M-30 -6 l-4 -8 l7 5 z" fill="#cdb878"/></g></g>
-        ${st === "idle" ? `<g transform="translate(0,-136)"><rect x="-30" y="-10" width="60" height="14" fill="rgba(11,12,14,0.8)" stroke="rgba(205,184,120,0.4)"/><text class="resting" x="0" y="1" text-anchor="middle">RESTING</text></g>` : ""}
+        ${st === "idle" ? `<g transform="translate(0,-136)"><rect x="-30" y="-10" width="60" height="14" fill="rgba(11,12,14,0.8)" stroke="rgba(205,184,120,0.4)"/><text class="resting" id="hall-rest-${sid}" x="0" y="1" text-anchor="middle">RESTING</text></g>` : ""}
         <rect class="plate" x="-62" y="72" width="124" height="22" fill="#15161a" stroke="rgba(217,212,199,0.35)"/>
-        <text x="0" y="87" text-anchor="middle" font-family="Cinzel, serif" font-size="11" letter-spacing="1.5" fill="#e8e1cf">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text>
+        <text id="hall-name-${sid}" x="0" y="87" text-anchor="middle" font-family="Cinzel, serif" font-size="11" letter-spacing="1.5" fill="#e8e1cf">${plate}</text>
+        <text id="hall-desc-${sid}" x="0" y="0" font-size="1" opacity="0">${status}</text>
       </g>`;
     };
     const benchY = 150 + rows * 170 + 20;
-    const benchFig = (x, m) => `<g class="station st-unsealed" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-label="${esc(nameOf(m.a).toUpperCase().slice(0, 16))}: unsealed" transform="translate(${x},${benchY})" opacity="0.65">
+    const benchFig = (x, m) => `<g class="station st-unsealed" data-acct="${esc(m.a.account)}" tabindex="0" role="button" aria-labelledby="hall-name-${esc(slug(m.a))} hall-desc-${esc(slug(m.a))}" transform="translate(${x},${benchY})" opacity="0.65">
         <g class="body"><path d="M-18 26 Q-20 -2 0 -10 Q20 -2 18 26 Z" fill="#1b1d23" stroke="#3a3d47"/>${face(m.a) ? `<clipPath id="clipb-${esc(slug(m.a))}"><circle cx="0" cy="-12" r="15"/></clipPath><circle cx="0" cy="-12" r="16.5" fill="#0b0c0e" stroke="#5b6471" stroke-width="1.5"/><image href="${face(m.a)}" x="-15" y="-27" width="30" height="30" clip-path="url(#clipb-${esc(slug(m.a))})"/>` : `<ellipse cx="0" cy="-10" rx="10" ry="11" fill="#2a2c33"/><path d="M-10 -10 Q0 -27 10 -10 Q0 -6 -10 -10Z" fill="#1b1d23"/>`}</g>
-        <rect x="-56" y="34" width="112" height="20" fill="#15161a" stroke="rgba(217,212,199,0.35)"/><text x="0" y="48" text-anchor="middle" font-family="Cinzel, serif" font-size="10" letter-spacing="1.5" fill="rgba(217,212,199,0.85)">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text></g>`;
+        <rect x="-56" y="34" width="112" height="20" fill="#15161a" stroke="rgba(217,212,199,0.35)"/><text id="hall-name-${esc(slug(m.a))}" x="0" y="48" text-anchor="middle" font-family="Cinzel, serif" font-size="10" letter-spacing="1.5" fill="rgba(217,212,199,0.85)">${esc(nameOf(m.a)).toUpperCase().slice(0, 16)}</text><text id="hall-desc-${esc(slug(m.a))}" x="0" y="0" font-size="1" opacity="0">unsealed</text></g>`;
     const embers = Array.from({ length: 14 }, (_, i) => `<circle class="ember" cx="${60 + (i * 83) % (W - 120)}" cy="${H - 20 - (i * 37) % 80}" r="${1 + (i % 3) * 0.6}" fill="#f4b64a" style="animation-delay:${(i * 0.43) % 6}s"/>`).join("");
     const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="The Great Hall: one station per member">
       <defs><pattern id="stone" width="60" height="30" patternUnits="userSpaceOnUse"><rect width="60" height="30" fill="#17181c"/><path d="M0 0H60M0 15H60M30 0V15M0 15V30M60 15V30" stroke="#1f2127" stroke-width="1"/></pattern><linearGradient id="wall" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1b20"/><stop offset="1" stop-color="#0e0f12"/></linearGradient></defs>
