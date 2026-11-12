@@ -25,7 +25,7 @@ the live testnet contract and checks that no balance moved.
 
 ## Handover, step by step
 
-1. **Deploy v6 to a fresh mainnet account** (`hub.<org>.near`) with `new(owner, token, 600, 48h)`
+1. **Deploy v7 to a fresh mainnet account** (`hub.guildhall.near`) with `new(owner, token, 600, 48h)`
    where `token` is Circle USDC on NEAR (`17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`).
    Fund it with enough NEAR for storage (budget ~2 NEAR per 1,000 jobs) and register it on
    the token with `storage_deposit`.
@@ -44,8 +44,8 @@ the live testnet contract and checks that no balance moved.
    upgrade delay real: until it is done, whoever holds that key can `deploy_contract`
    instantly, and nothing in the contract can stop them. After it, the only way to change the
    code is `propose_upgrade` → wait → `apply_upgrade`, both owner-only, i.e. multisig-only.
-   Do it from the operator: `near account delete-key hub.<org>.near <full-access-public-key>`.
-   Check with `near account list-keys hub.<org>.near` that only function-call keys (if any) remain.
+   Do it from the operator: `near account delete-key hub.guildhall.near <full-access-public-key>`.
+   Check with `near account list-keys hub.guildhall.near` that only function-call keys (if any) remain.
 7. **Register the attested enclave signers** (`add_trusted_signer`) from a fresh NEAR AI
    attestation, and mint no seals until the first mainnet trial round is published.
 8. **Turn on monitoring:** a job that polls `get_accounting().total` against

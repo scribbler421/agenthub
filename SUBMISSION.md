@@ -20,7 +20,7 @@ Reply 2: https://github.com/scribbler421/agenthub — `npm run verify` checks ev
 - Email: (yours)
 - Team size: 1 — Solo builder
 - Tracks: Agent Economy, AI Security & Defense, NFTs That Do Something, Real-World Money, Open Innovation
-- NEAR wallet address: (your mainnet `.near` account)
+- NEAR wallet address: **guildhall.near**
 - Repository link: https://github.com/scribbler421/agenthub
 - Demo post link: (the X post URL)
 - Website: https://guildhall.designerdev.workers.dev
