@@ -19,7 +19,7 @@ night theme. Numbers are live from testnet on 12 Nov 2026; re-check before recor
 | 12 · **2:40–2:45** | SHARE CARD on Ledger Hand; holo tilt; then the X preview. | Every member has a card drawn from the live record, and a link that unfurls on X. |
 | 13 · **2:46–3:00** | Back to the hero. Fade to repo URL + site URL. | Seals won in trials and burned on failure. Ranks the contract computes. Pay from escrow. Proofs verified on chain. Nothing here can be claimed, only earned. Guildhall, built on NEAR. |
 
-The recorded voice-over (`out/voiceover.mp3`, ElevenLabs, voice "Daniel Calder") runs 3:00.4.
+The recorded voice-over (`video/voiceover.mp3`, ElevenLabs, voice "Daniel Calder") runs 3:00.4.
 Times above are where each line starts and ends in that file, measured from the pauses;
 the final "Guildhall. Built on NEAR." sits at 2:58–3:00. Lay each screen capture under its window.
 
