@@ -3,6 +3,7 @@
 //   npm run dispute -- --job 15 --fallback           anyone, 30 days after the reject: 50/50
 //   npm run dispute -- --job 12 --auto-approve       anyone, after the review window: settles as approved
 //   npm run dispute -- --job 16 --retry-refund       client or owner: re-send a failed refund
+//   npm run dispute -- --job 17 --release            client (hub v7): member accepted 3+ days ago and never submitted; back to Open
 //   npm run dispute -- --job 15                      show the job's settlement state
 import { accountFromEnv, call, env, arg, hasFlag, view, txHash, explorerTx, fmtUsdc } from "./near.js";
 
@@ -16,6 +17,7 @@ async function main() {
   else if (hasFlag("fallback")) r = await call(me, hub, "claim_dispute_fallback", { job_id: jobId }, { gas });
   else if (hasFlag("auto-approve")) r = await call(me, hub, "claim_auto_approve", { job_id: jobId }, { gas });
   else if (hasFlag("retry-refund")) r = await call(me, hub, "retry_refund", { job_id: jobId }, { gas });
+  else if (hasFlag("release")) r = await call(me, hub, "release_abandoned", { job_id: jobId }, { gas }); // v7: client, 3 days after an accept with no submit
   if (r) console.log(`done  ${explorerTx(txHash(r))}`);
   await new Promise((d) => setTimeout(d, 1200));
   const j = await view(hub, "get_job", { job_id: jobId });

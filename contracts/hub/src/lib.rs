@@ -38,6 +38,11 @@ pub const DISPUTE_FALLBACK_NS: u64 = 30 * NS_PER_DAY;
 pub const FALLBACK_MEMBER_BPS: u16 = 5_000;
 /// Storage key (outside the state struct) for proposed upgrade code.
 const UPGRADE_CODE_KEY: &[u8] = b"__upgrade_code";
+/// v7: a member who accepts and then goes silent cannot lock the client's budget. After this
+/// long without a submit, the client may put the job back on the board (and then cancel it).
+pub const ACCEPT_WINDOW_NS: u64 = 3 * NS_PER_DAY;
+/// v7: raw-storage prefix for the set of execution proofs already attached to a job.
+const USED_PROOF_PREFIX: &[u8] = b"__proof:";
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -823,6 +828,13 @@ impl AgentHub {
         require!(job.status == JobStatus::Accepted, "job is not accepted");
         require!(job.agent.as_ref() == Some(&agent), "not this job's agent");
         require!(!job.require_proof || proof.is_some(), "this job requires a TEE execution proof");
+        if let Some(p) = &proof {
+            // Proofs are public once submitted. Without this, any member could copy one from
+            // another job and attach it to their own. One enclave completion backs one job.
+            let key = Self::proof_key(p);
+            require!(!env::storage_has_key(&key), "proof: this execution proof was already used on another job");
+            env::storage_write(&key, &job_id.to_le_bytes());
+        }
         job.proof = proof;
         job.output_uri = Some(output_uri);
         job.status = JobStatus::Submitted;
@@ -831,8 +843,6 @@ impl AgentHub {
         self.log_job(job_id, "job_submitted");
     }
 
-    /// Client approves: budget minus fee is credited to the agent's in-contract
-    /// balance; fee goes to the platform; rating and stats are recorded.
     /// Client or assigned member writes a line into the contract's thread.
     /// Open contracts take client notes only (no member yet); settled ones are closed.
     pub fn post_note(&mut self, job_id: JobId, text: String) {
@@ -924,6 +934,34 @@ impl AgentHub {
             require!(env::block_timestamp() >= job.disputed_at.expect("no dispute time") + DISPUTE_FALLBACK_NS, "dispute fallback not yet available");
         }
         self.settle(job_id, FALLBACK_MEMBER_BPS, None, JobStatus::Resolved, "job_resolved_fallback")
+    }
+
+    /// A member accepted and then never submitted. After `ACCEPT_WINDOW_NS` the client may
+    /// put the job back on the board, where another member can take it or the client can
+    /// `cancel` for a refund. No tokens move here. The lapse goes on the member's record as a
+    /// completed-but-not-approved job, so it lowers their approval rate.
+    /// (`updated_at` is the accept time while a job is Accepted: notes do not touch it.)
+    pub fn release_abandoned(&mut self, job_id: JobId) {
+        let client = env::predecessor_account_id();
+        let now = env::block_timestamp();
+        let agent = {
+            let job = self.jobs.get_mut(&job_id).expect("no such job");
+            require!(job.client == client, "not this job's client");
+            require!(job.status == JobStatus::Accepted, "job is not waiting on a member");
+            require!(now >= job.updated_at + ACCEPT_WINDOW_NS, "the member still has time to submit");
+            job.status = JobStatus::Open;
+            job.updated_at = now;
+            job.agent.take().expect("no member")
+        };
+        if let Some(profile) = self.agents.get_mut(&agent) {
+            profile.jobs_completed += 1;
+            profile.jobs_rejected += 1;
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"guildhall","version":"1.0.0","event":"job_abandoned","data":{{"job_id":{},"member":"{}"}}}}"#,
+            job_id, agent
+        ));
+        self.log_job(job_id, "job_reopened");
     }
 
     /// Client cancels a job nobody has accepted yet; the escrow is refunded.
@@ -1295,12 +1333,44 @@ impl AgentHub {
 
     /// EIP-191 recovery of the TEE signer: keccak256("\x19Ethereum Signed Message:\n" + len + text),
     /// ecrecover → keccak256(pubkey)[12..] → lowercase hex (no 0x).
-    fn recover_signer(p: &ExecutionProof) -> String {
-        let text = if p.signature_kind == "provider_tee" {
+    /// Storage key for a proof: keyed on what was signed, not on the signature bytes, because
+    /// an ECDSA signature has a second valid encoding for the same message.
+    fn proof_key(p: &ExecutionProof) -> Vec<u8> {
+        let mut key = USED_PROOF_PREFIX.to_vec();
+        key.extend_from_slice(&env::keccak256_array(Self::signed_text(p).as_bytes()));
+        key
+    }
+
+    /// Which job an execution proof is attached to, if any.
+    pub fn proof_used_by(&self, proof: ExecutionProof) -> Option<JobId> {
+        env::storage_read(&Self::proof_key(&proof)).map(|b| JobId::from_le_bytes(b.try_into().expect("bad proof record")))
+    }
+
+    /// Owner, once after upgrading to v7: record the proofs that jobs settled before v7
+    /// already carry, so they cannot be attached to a new job either. Safe to repeat.
+    pub fn index_existing_proofs(&mut self, from: Option<u64>, limit: Option<u64>) -> u32 {
+        self.assert_owner();
+        let mut n = 0;
+        for (id, job) in self.jobs.iter().skip(from.unwrap_or(0) as usize).take(limit.unwrap_or(200) as usize) {
+            if let Some(p) = &job.proof {
+                let key = Self::proof_key(p);
+                if !env::storage_has_key(&key) { env::storage_write(&key, &id.to_le_bytes()); n += 1; }
+            }
+        }
+        n
+    }
+
+    /// The exact text the enclave (or gateway) signs.
+    fn signed_text(p: &ExecutionProof) -> String {
+        if p.signature_kind == "provider_tee" {
             format!("{}:{}:{}", p.model, p.request_hash, p.response_hash)
         } else {
             format!("{}:{}", p.request_hash, p.response_hash)
-        };
+        }
+    }
+
+    fn recover_signer(p: &ExecutionProof) -> String {
+        let text = Self::signed_text(p);
         let mut msg = format!("\x19Ethereum Signed Message:\n{}", text.len()).into_bytes();
         msg.extend_from_slice(text.as_bytes());
         let hash = env::keccak256_array(&msg);
@@ -2002,5 +2072,110 @@ mod tests {
         assert_eq!(c.get_balance(agent()).0, 0);
         assert_eq!(c.list_jobs(Some(JobStatus::Disputed), None, None).len(), 1);
         check(&c, 2_000_000);
+    }
+
+    // ------------------------------------------------------------------ v7
+
+    fn proof_job(c: &mut AgentHub) -> JobId {
+        testing_env!(ctx(token()).build());
+        c.ft_on_transfer(accounts(2), U128(1_000_000), r#"{"skill":"document-extraction","min_level":1,"spec_uri":"s","require_proof":true}"#.into());
+        c.next_job_id - 1
+    }
+
+    #[test]
+    #[should_panic(expected = "already used on another job")]
+    fn a_proof_cannot_be_attached_to_two_jobs() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 1, "".into());
+        c.add_trusted_signer(PROOF_SIGNER.into(), "test enclave".into());
+        let a = proof_job(&mut c);
+        let b = proof_job(&mut c);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(a);
+        c.submit(a, "out-a".into(), Some(proof()));
+        assert_eq!(c.proof_used_by(proof()), Some(a));
+        c.accept_job(b);
+        c.submit(b, "out-b".into(), Some(proof())); // copied from job a: public on-chain
+    }
+
+    #[test]
+    fn proofs_from_before_v7_are_indexed_once() {
+        let mut c = setup();
+        testing_env!(ctx(accounts(0)).build());
+        c.mint_cert(agent(), "document-extraction".into(), 1, "".into());
+        c.add_trusted_signer(PROOF_SIGNER.into(), "test enclave".into());
+        let a = proof_job(&mut c);
+        // A job that already carries a proof but has no index record (the pre-v7 state).
+        c.jobs.get_mut(&a).unwrap().proof = Some(proof());
+        assert_eq!(c.proof_used_by(proof()), None);
+        testing_env!(ctx(accounts(0)).build());
+        assert_eq!(c.index_existing_proofs(None, None), 1);
+        assert_eq!(c.index_existing_proofs(None, None), 0);
+        assert_eq!(c.proof_used_by(proof()), Some(a));
+    }
+
+    #[test]
+    fn silent_member_cannot_lock_the_budget() {
+        let mut c = setup();
+        gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 2_000_000, 1);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        check(&c, 2_000_000);
+
+        // The member posts a note two days in; that must not push the deadline out.
+        testing_env!(ctx(agent()).block_timestamp(1_002 * NS_PER_DAY).build());
+        c.post_note(id, "Working on it.".into());
+
+        testing_env!(ctx(accounts(2)).block_timestamp(1_003 * NS_PER_DAY).build());
+        c.release_abandoned(id);
+        let j = c.get_job(id).unwrap();
+        assert_eq!(j.status, JobStatus::Open);
+        assert_eq!(j.agent, None);
+        let p = c.get_agent(agent()).unwrap();
+        assert_eq!((p.jobs_completed, p.jobs_approved, p.jobs_rejected), (1, 0, 1));
+        assert_eq!(c.get_balance(agent()).0, 0);
+        check(&c, 2_000_000); // nothing moved
+
+        // Back on the board, the client can take the money home.
+        c.cancel(id);
+        assert_eq!(c.get_job(id).unwrap().status, JobStatus::Cancelled);
+        check(&c, 2_000_000); // refund in flight until the callback
+    }
+
+    #[test]
+    #[should_panic(expected = "still has time")]
+    fn release_waits_for_the_accept_window() {
+        let mut c = setup();
+        gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 2_000_000, 1);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        testing_env!(ctx(accounts(2)).block_timestamp(1_002 * NS_PER_DAY).build());
+        c.release_abandoned(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "not this job's client")]
+    fn only_the_client_can_release() {
+        let mut c = setup();
+        gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 2_000_000, 1);
+        testing_env!(ctx(agent()).build());
+        c.accept_job(id);
+        testing_env!(ctx(accounts(3)).block_timestamp(1_010 * NS_PER_DAY).build());
+        c.release_abandoned(id);
+    }
+
+    #[test]
+    #[should_panic(expected = "not waiting on a member")]
+    fn submitted_work_cannot_be_released() {
+        let mut c = setup();
+        gold(&mut c);
+        let id = post_job(&mut c, accounts(2), 2_000_000, 1);
+        submit_job(&mut c, id);
+        testing_env!(ctx(accounts(2)).block_timestamp(1_010 * NS_PER_DAY).build());
+        c.release_abandoned(id);
     }
 }
