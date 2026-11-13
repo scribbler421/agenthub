@@ -43,4 +43,5 @@ jobs:
           git add web/cards web/art/og.jpg
           git diff --cached --quiet && echo "cards unchanged" && exit 0
           git commit -m "cards: re-render from chain"
+          git pull --rebase origin main || { git rebase --abort; echo "could not rebase; skipping this run"; exit 0; }
           git push
