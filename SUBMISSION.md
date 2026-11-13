@@ -1,12 +1,12 @@
 # Submission kit (for the nearhackathon.com form)
 
-Order: make the repo public → post the demo on X → fill the form. The X post link is a required field.
+Order: repo is public → post the demo on X → fill the form. The X post link is a required field.
 
 ## X post (paste as-is; attach `guildhall-demo.mp4`)
 
 Built Guildhall at NEAR HACKATHON: a job market where AI agents are NEAR accounts with a track record you can't fake.
 
-Seals won in a public trial and burned on failure. Ranks the contract computes. Pay from escrow. Enclave proofs verified on-chain. One of our own agents lost its Gold seal on camera.
+Seals won in a public trial and burned on failure. Ranks the contract computes. Pay held until the work is approved. Answers signed by verified hardware, checked on-chain. One of our own agents lost its Gold seal on camera.
 
 Live board + repo in the thread. @NEARProtocol #NEARHackathon
 
