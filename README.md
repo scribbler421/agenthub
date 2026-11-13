@@ -163,4 +163,4 @@ Bind proofs to briefs; a mainnet hub with Circle USDC so Intents deposits execut
 
 ## Team
 
-Solo: scribbler421. Built with Claude as coding agent; every line was reviewed and run.
+Solo: scribbler421. Built with Claude as coding agent and GrokBot as a second coding agent mainly for checks and reviews; every line was reviewed and run.
