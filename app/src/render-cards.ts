@@ -26,12 +26,17 @@ async function main() {
   page.on("pageerror", (e: Error) => console.error("page error:", e.message));
 
   // Site-wide preview: the title hero at 1200x630.
+  // Night theme, header hidden, the hero filling the frame edge to edge.
   await page.setViewportSize({ width: 1200, height: 630 });
+  await page.addInitScript(() => { try { localStorage.setItem("guildhall.theme", "night"); } catch {} });
   await page.goto(`file://${WEB}/index.html`);
+  await page.addStyleTag({ content: "header{display:none!important} body{padding:0!important;margin:0!important} .hero{min-height:630px!important;border:0!important;border-radius:0!important} .wrap,main{padding:0!important;margin:0!important;max-width:none!important}" });
   await page.waitForTimeout(3500);
   await page.mouse.move(820, 300);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(WEB, "art", "og.jpg"), type: "jpeg", quality: 88, clip: { x: 0, y: 0, width: 1200, height: 630 } });
+  const hero = await page.$("#hero");
+  const box = await hero!.boundingBox();
+  await page.screenshot({ path: path.join(WEB, "art", "og.jpg"), type: "jpeg", quality: 88, clip: { x: box!.x, y: box!.y, width: Math.min(1200, box!.width), height: 630 } });
   await page.setViewportSize({ width: 1362, height: 1000 });
 
   for (const a of agents) {
