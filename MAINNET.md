@@ -4,7 +4,7 @@ Nothing here has been done yet. The hub runs on testnet (`hub.nexus0.testnet`, v
 single operator account holding every key. This is the handover plan, in order, with the
 reasons. None of it changes keys or moves funds until someone follows it on purpose.
 
-## What the contract already enforces (v6)
+## What the contract already enforces (v7)
 
 | Concern | Mechanism |
 | --- | --- |
